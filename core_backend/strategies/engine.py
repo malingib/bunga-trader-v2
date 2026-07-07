@@ -1,0 +1,673 @@
+"""Quadapt ML Trader — Main Orchestration Engine.
+
+Ties together: market data → indicators → envelope signals
+→ quality scoring (MTF, StochRSI, Supertrend, Squeeze, Order Blocks)
+→ risk (TP/SL) → output trade signal.
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from .config import QUADAPT_CFG
+from .indicators import (
+    atr,
+    bars_since,
+    crossover,
+    crossunder,
+    detect_order_blocks,
+    detect_liquidity_sweep,
+    envelope_bands,
+    fvg_detect,
+    heikin_ashi,
+    mlma_trend,
+    relative_volume,
+    rsi,
+    sma,
+    stoch_rsi,
+    supertrend,
+    swing_points,
+    ttm_squeeze,
+    vwap,
+)
+from . import price_action
+from .market_data import MarketSnapshot, fetch_market_data
+from .quality_engine import SignalQualityEngine
+from .risk import RiskCalculator
+from ..logger import setup_logger
+
+logger = setup_logger("QuadaptEngine")
+
+
+# ──────────────────────────────────────────────
+# Output signal model
+# ──────────────────────────────────────────────
+
+
+class StrategySignal:
+    """A trade signal produced by the strategy engine."""
+
+    def __init__(
+        self,
+        *,
+        symbol: str,
+        action: str,
+        entry_price: float,
+        sl: float,
+        tp: float,
+        tp2: float = 0.0,
+        tp3: float = 0.0,
+        quality_score: float,
+        signal_source: str,
+        confidence: str = "medium",
+        generated_at: Optional[datetime] = None,
+        metadata: Optional[dict] = None,
+    ):
+        self.symbol = symbol
+        self.action = action  # BUY or SELL
+        self.entry_price = entry_price
+        self.sl = sl
+        self.tp = tp
+        self.tp2 = tp2
+        self.tp3 = tp3
+        self.quality_score = quality_score
+        self.signal_source = signal_source
+        self.confidence = confidence
+        self.generated_at = generated_at or datetime.utcnow()
+        self.metadata = metadata or {}
+
+    def to_dict(self) -> dict:
+        """Serialize for pipeline input and ML logging."""
+        return {
+            "symbol": self.symbol,
+            "action": self.action,
+            "entry_price": self.entry_price,
+            "sl": self.sl,
+            "tp": self.tp,
+            "tp2": self.tp2,
+            "tp3": self.tp3,
+            "quality_score": self.quality_score,
+            "confidence": self.confidence,
+            "signal_source": self.signal_source,
+            "generated_at": self.generated_at.isoformat(),
+            "metadata": self.metadata,
+        }
+
+    def to_parsed_signal_dict(self) -> dict:
+        """Convert to the format expected by Bunga's ParsedSignal."""
+        return {
+            "symbol": self.symbol,
+            "action": self.action,
+            "entry_price": self.entry_price,
+            "sl": self.sl,
+            "tp": self.tp,
+            "tp2": self.tp2,
+            "tp3": self.tp3,
+            "raw_text": f"[Strategy] {self.signal_source}: {self.action} {self.symbol} "
+            f"@{self.entry_price} | SL: {self.sl} TP: {self.tp} | Score: {self.quality_score}",
+            "ai_score": self.quality_score / 100.0,
+        }
+
+
+# ──────────────────────────────────────────────
+# Market Regime Detection
+# ──────────────────────────────────────────────
+
+
+def detect_regime(closes: List[float], lookback: int = 50) -> str:
+    """Classify market regime as 'trending' or 'ranging'."""
+    if len(closes) < lookback:
+        return "ranging"
+
+    window = closes[-lookback:]
+    changes = [abs(window[i] - window[i - 1]) / window[i - 1] for i in range(1, len(window))]
+    avg_change = sum(changes) / len(changes) if changes else 0
+
+    # Simple heuristic: high avg change = trending, low = ranging
+    if avg_change > 0.0015:  # ~0.15% per bar average
+        return "trending"
+    return "ranging"
+
+
+# ──────────────────────────────────────────────
+# ML Data Logger
+# ──────────────────────────────────────────────
+
+
+class MLDataLogger:
+    """Logs signals and market state to flat files for ML training."""
+
+    def __init__(self) -> None:
+        self.data_dir = Path(QUADAPT_CFG.ml_data_dir)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._session_file = self.data_dir / f"session_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.jsonl"
+        self._feature_file = self.data_dir / "training_data.jsonl"
+
+    def log_signal(
+        self,
+        signal: StrategySignal,
+        market_features: dict,
+        outcome: Optional[str] = None,
+    ) -> None:
+        """Log a signal + market state for ML training.
+
+        Each line is a training example. Features include:
+          - technical indicators at signal time
+          - quality score components
+          - outcome (filled later when trade closes)
+        """
+        record = {
+            "timestamp": signal.generated_at.isoformat(),
+            "symbol": signal.symbol,
+            "action": signal.action,
+            "entry_price": signal.entry_price,
+            "sl": signal.sl,
+            "tp": signal.tp,
+            "quality_score": signal.quality_score,
+            "confidence": signal.confidence,
+            "signal_source": signal.signal_source,
+            "features": market_features,
+            "outcome": outcome,  # "win", "loss", None (pending)
+        }
+
+        # Append to session file
+        with open(self._session_file, "a") as f:
+            f.write(json.dumps(record) + "\n")
+
+        # Also append to cumulative training file
+        with open(self._feature_file, "a") as f:
+            f.write(json.dumps(record) + "\n")
+
+        logger.debug(f"ML data logged to {self._session_file.name}")
+
+    def update_outcome(
+        self, symbol: str, entry_time: datetime, outcome: str, pnl: float
+    ) -> None:
+        """Update a previously logged signal with its outcome."""
+        # For now, append outcome record — reconciliation can be done offline
+        record = {
+            "type": "outcome_update",
+            "symbol": symbol,
+            "entry_time": entry_time.isoformat(),
+            "outcome": outcome,
+            "pnl": pnl,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        with open(self._session_file, "a") as f:
+            f.write(json.dumps(record) + "\n")
+
+
+# ──────────────────────────────────────────────
+# Quadapt Engine
+# ──────────────────────────────────────────────
+
+
+class QuadaptEngine:
+    """Main strategy engine — runs the full Quadapt pipeline on market data."""
+
+    def __init__(self) -> None:
+        self.cfg = QUADAPT_CFG
+        self.quality_engine = SignalQualityEngine()
+        self.risk_calc = RiskCalculator()
+        self.ml_logger = MLDataLogger()
+
+        # Track last signal per symbol (for clustering prevention)
+        self._last_signal: Dict[str, Tuple[datetime, str, float]] = {}
+
+    def evaluate(self, snapshot: MarketSnapshot) -> Optional[StrategySignal]:
+        """Run the full strategy pipeline on a market snapshot.
+
+        Returns a StrategySignal if conditions are met, None otherwise.
+        """
+        symbol = snapshot.symbol
+        candles = snapshot.candles
+
+        if len(candles) < 70:  # minimum bars for any meaningful signal
+            logger.warning(f"Too few candles for {symbol}: {len(candles)}")
+            return None
+
+        # ── Extract OHLC ──
+        opens = [c.open for c in candles]
+        highs = [c.high for c in candles]
+        lows = [c.low for c in candles]
+        closes = [c.close for c in candles]
+        volumes = [c.volume for c in candles]
+
+        # ── Step 1: Heikin Ashi smoothing (stolen from Scalping Pullback) ──
+        if self.cfg.envelopes.use_heikin_ashi:
+            ha_opens, ha_highs, ha_lows, ha_closes = heikin_ashi(
+                opens, highs, lows, closes
+            )
+            env_data = ha_closes
+            env_highs = ha_highs
+            env_lows = ha_lows
+        else:
+            env_data = closes
+            env_highs = highs
+            env_lows = lows
+
+        # ── Step 2: ATR (needed by envelopes + risk) ──
+        atr_vals = atr(highs, lows, closes, self.cfg.envelopes.atr_period)
+        avg_atr = sum(atr_vals[-15:]) / 15 if len(atr_vals) >= 15 else atr_vals[-1]
+        last_close = closes[-1]
+        envelope_mult_primary = self.cfg.envelopes.envelope_mult_primary
+        if self.cfg.envelopes.adaptive_envelope_widening:
+            atr_perc = avg_atr / last_close if last_close else 0.0
+            if atr_perc > self.cfg.envelopes.volatility_widening_atr_threshold:
+                envelope_mult_primary = min(
+                    self.cfg.envelopes.max_envelope_multiplier, envelope_mult_primary * 1.5
+                )
+
+        # ── Step 3: TRIGGER = liquidity sweep (pillar ①) ──
+        # Envelope is DEMOTED to a confluence weight (it is NO LONGER a trigger).
+        # Sweeps/PA/gate run on RAW candles; only the envelope weight uses HA.
+        i = len(closes) - 1  # current index
+
+        # PA/score scratch defaults (set properly in Step 3c / 3d).
+        disp: Optional[float] = None
+        struct = None
+        fvg = None
+
+        # 200MA (pillar ③) computed on RAW closes — gates counter-trend entries.
+        ma200 = sma(closes, self.cfg.trend_gate.ma_period)
+        ma200_val = ma200[i] if i < len(ma200) and not math.isnan(ma200[i]) else None
+
+        # Envelope strength kept ONLY as a weight (not a trigger).
+        _, upper_p, lower_p = envelope_bands(
+            env_data,
+            self.cfg.envelopes.length_primary,
+            envelope_mult_primary,
+            atr_vals,
+            self.cfg.envelopes.min_envelope_pct,
+        )
+        env_buy = (
+            not math.isnan(upper_p[i]) and not math.isnan(lower_p[i])
+            and last_close > upper_p[i]
+        )
+        env_sell = (
+            not math.isnan(upper_p[i]) and not math.isnan(lower_p[i])
+            and last_close < lower_p[i]
+        )
+        if env_buy and env_sell:
+            envelope_strength = 1.0
+        elif env_buy or env_sell:
+            envelope_strength = 0.7
+        else:
+            envelope_strength = 0.5
+
+        # ── Liquidity sweep trigger on RAW OHLC (sweeps are real-price events) ──
+        swings = swing_points(highs, lows, self.cfg.sweep.swing_left, self.cfg.sweep.swing_right)
+        sweep = None
+        if self.cfg.sweep.enabled:
+            sweep = detect_liquidity_sweep(
+                highs, lows, opens, closes,
+                swings=swings,
+                swing_lookback=self.cfg.sweep.swing_lookback,
+                min_wick_ratio=self.cfg.sweep.min_wick_ratio,
+            )
+        signal_type = sweep.direction if sweep else None
+
+        if signal_type is None:
+            # No sweep -> no trade. The envelope is a weight, not a trigger.
+            return None
+
+        # ── Step 3b: HARD trend GATE (pillar ③) — blocks counter-trend entries ──
+        if self.cfg.trend_gate.enabled and ma200_val is not None:
+            band = self.cfg.trend_gate.vwap_band_pct * last_close
+            if self.cfg.trend_gate.require_200ma_alignment:
+                if signal_type == "BUY" and last_close < ma200_val:
+                    logger.debug(
+                        f"{symbol}: 200MA gate blocked BUY "
+                        f"(price {last_close:.5f} < MA {ma200_val:.5f})"
+                    )
+                    return None
+                if signal_type == "SELL" and last_close > ma200_val:
+                    logger.debug(
+                        f"{symbol}: 200MA gate blocked SELL "
+                        f"(price {last_close:.5f} > MA {ma200_val:.5f})"
+                    )
+                    return None
+            if self.cfg.trend_gate.use_vwap:
+                vw = vwap(highs, lows, closes, volumes)
+                vw_val = vw[i] if i < len(vw) and not math.isnan(vw[i]) else None
+                if vw_val is not None:
+                    if signal_type == "BUY" and last_close < vw_val - band:
+                        logger.debug(f"{symbol}: VWAP gate blocked BUY (below VWAP)")
+                        return None
+                    if signal_type == "SELL" and last_close > vw_val + band:
+                        logger.debug(f"{symbol}: VWAP gate blocked SELL (above VWAP)")
+                        return None
+
+        # ── Step 3c: PA confirmation (pillar ②) — tightens the entry ──
+        pa = self.cfg.price_action
+        # Always compute PA artifacts for scoring, even if a sub-gate is off.
+        disp = price_action.displacement(
+            opens, closes, highs, lows,
+            atr_period=self.cfg.envelopes.atr_period,
+            mult=pa.displacement_mult,
+        )
+        struct = price_action.classify_structure(highs, lows, swings=swings)
+        fvg = fvg_detect(highs, lows, closes) if pa.use_fvg_boost else None
+        if pa.enabled:
+            if pa.require_displacement and disp < pa.displacement_mult:
+                logger.debug(f"{symbol}: PA displacement too weak ({disp:.2f}xATR)")
+                return None
+            if pa.require_choch_alignment and struct.last_choch:
+                if signal_type == "BUY" and struct.last_choch == "SELL":
+                    logger.debug(f"{symbol}: PA CHoCH bias contradicts BUY")
+                    return None
+                if signal_type == "SELL" and struct.last_choch == "BUY":
+                    logger.debug(f"{symbol}: PA CHoCH bias contradicts SELL")
+                    return None
+            if pa.min_rejection_wick > 0:
+                tail, _ = price_action.wick_ratio(highs, lows, opens, closes)
+                if tail < pa.min_rejection_wick:
+                    logger.debug(f"{symbol}: rejection wick too small ({tail:.2f})")
+                    return None
+
+        # ── Step 3d: Volume confirm (pillar ③, advisory — OFF for FX w/ no real vol) ──
+        rel_vol = None
+        if self.cfg.trend_gate.require_volume_spike:
+            rv = relative_volume(volumes, self.cfg.trend_gate.volume_sma_period)
+            rel_vol = rv[i] if i < len(rv) and not math.isnan(rv[i]) else None
+            if rel_vol is not None and rel_vol < self.cfg.trend_gate.volume_spike_mult:
+                logger.debug(f"{symbol}: volume spike gate blocked ({rel_vol:.2f}x)")
+                return None
+
+        # ── Step 4: Barssince guard (stolen from Scalping Pullback) ──
+        if self.cfg.envelopes.use_barssince_guard:
+            # Was price inside the envelope recently?
+            inside_primary = [
+                not math.isnan(upper_p[j])
+                and not math.isnan(lower_p[j])
+                and lower_p[j] <= env_data[j] <= upper_p[j]
+                for j in range(len(env_data))
+            ]
+            bars_in = bars_since(inside_primary, self.cfg.envelopes.barssince_lookback + 1)
+            if bars_in > self.cfg.envelopes.barssince_lookback:
+                logger.debug(f"{symbol}: barssince guard blocked — last inside was {bars_in} bars ago")
+                return None
+
+        # ── Step 5: MLMA trend ──
+        mlma_val = None
+        if self.cfg.mlma.enabled:
+            mlma_line = mlma_trend(
+                env_data, self.cfg.mlma.length, self.cfg.mlma.kernel, self.cfg.mlma.gamma
+            )
+            mlma_val = mlma_line[i] if not math.isnan(mlma_line[i]) else None
+
+        # ── Step 6: Supertrend direction (stolen from StochRSI+Supertrend) ──
+        st_dir = None
+        if self.cfg.supertrend.enabled:
+            _, st_direction = supertrend(
+                highs,
+                lows,
+                closes,
+                self.cfg.supertrend.atr_period,
+                self.cfg.supertrend.factor,
+            )
+            st_dir = st_direction[i] if i < len(st_direction) else None
+
+        # ── Step 7: StochRSI (stolen from StochRSI+Supertrend) ──
+        stoch_k = None
+        stoch_d = None
+        if self.cfg.stoch_rsi.enabled:
+            k_line, d_line = stoch_rsi(
+                closes,
+                self.cfg.stoch_rsi.rsi_length,
+                self.cfg.stoch_rsi.stoch_length,
+                self.cfg.stoch_rsi.smooth_k,
+                self.cfg.stoch_rsi.smooth_d,
+            )
+            stoch_k = k_line[i] if not math.isnan(k_line[i]) else None
+            stoch_d = d_line[i] if not math.isnan(d_line[i]) else None
+
+        # ── Step 8: TTM Squeeze (stolen from TTM Squeeze) ──
+        sq_active = False
+        sq_released = False
+        in_squeeze = False
+        if self.cfg.ttm.enabled:
+            squeeze_active, _, squeeze_released = ttm_squeeze(
+                highs,
+                lows,
+                closes,
+                self.cfg.ttm.bb_length,
+                self.cfg.ttm.bb_mult,
+                self.cfg.ttm.kc_length,
+                self.cfg.ttm.kc_mult,
+            )
+            sq_active = squeeze_active[i] if i < len(squeeze_active) else False
+            sq_released = squeeze_released[i] if i < len(squeeze_released) else False
+            in_squeeze = sq_active or False
+
+        # ── Step 9: Order blocks ──
+        ob_proximity = 0.0
+        ob_high = None
+        ob_low = None
+        if self.cfg.order_blocks.enabled:
+            blocks = detect_order_blocks(
+                highs,
+                lows,
+                opens,
+                closes,
+                volumes,
+                self.cfg.order_blocks.lookback,
+                self.cfg.order_blocks.min_block_strength,
+            )
+            # Find nearest order block
+            for ob in blocks:
+                if signal_type == "BUY" and ob.block_type == "bullish":
+                    if ob.high >= last_close >= ob.low:
+                        ob_proximity = max(ob_proximity, ob.strength)
+                        if ob_high is None:
+                            ob_high, ob_low = ob.high, ob.low
+                elif signal_type == "SELL" and ob.block_type == "bearish":
+                    if ob.high >= last_close >= ob.low:
+                        ob_proximity = max(ob_proximity, ob.strength)
+                        if ob_high is None:
+                            ob_high, ob_low = ob.high, ob.low
+
+        # ── Step 10: MTF alignment (simplified — compare with longer/short timeframes) ──
+        # Since we only have one resolution, we estimate MTF alignment from
+        # how many other timeframe-like signals agree
+        mtf_score = 0.5  # neutral default
+        agreement = 0
+        total = 0
+
+        # Check: Supertrend agrees with signal direction
+        if st_dir is not None:
+            total += 1
+            if (signal_type == "BUY" and st_dir == 1) or (
+                signal_type == "SELL" and st_dir == -1
+            ):
+                agreement += 1
+
+        # Check: MLMA agrees
+        if mlma_val is not None:
+            total += 1
+            if (signal_type == "BUY" and last_close > mlma_val) or (
+                signal_type == "SELL" and last_close < mlma_val
+            ):
+                agreement += 1
+
+        if total > 0:
+            mtf_score = agreement / total
+
+        # ── Step 11: Market regime ──
+        regime = detect_regime(closes, self.cfg.adaptive.regime_lookback)
+        logger.debug(f"{symbol} regime: {regime}")
+
+        # ── Step 12: Clustering prevention ──
+        bars_since_last = 999
+        if symbol in self._last_signal:
+            last_time, last_price = self._last_signal[symbol]
+            bars_since_last = bars_since(
+                [c.time >= last_time for c in candles],
+                self.cfg.adaptive.cluster_lookback_bars + 1,
+            )
+            # Also check price distance
+            if bars_since_last < self.cfg.adaptive.cluster_lookback_bars:
+                price_dist = abs(last_close - last_price) / last_price * 100
+                if price_dist < self.cfg.adaptive.cluster_price_distance_pct:
+                    logger.debug(
+                        f"{symbol}: cluster prevention blocked — only {bars_since_last} bars "
+                        f"since last signal at {last_price}"
+                    )
+                    return None
+
+        # ── Step 13: Compute quality score ──
+        # envelope_strength is already computed at Step 3 (demoted weight).
+
+        quality_score = self.quality_engine.compute(
+            symbol=symbol,
+            signal_type=signal_type,
+            index=i,
+            price=last_close,
+            mlma_trend_val=mlma_val,
+            supertrend_dir=st_dir,
+            is_squeeze_release=sq_released,
+            is_squeeze_active=sq_active,
+            in_squeeze=in_squeeze,
+            stoch_rsi_k=stoch_k,
+            stoch_rsi_d=stoch_d,
+            envelope_signal_strength=envelope_strength,
+            mtf_alignment=mtf_score,
+            order_block_proximity=ob_proximity,
+            bars_since_last_signal=bars_since_last,
+            regime=regime,
+            sweep=sweep,
+            pa_displacement=disp,
+            pa_structure=struct,
+            has_fvg=bool(fvg),
+            rel_volume=rel_vol,
+        )
+
+        if not self.quality_engine.meets_threshold(quality_score):
+            logger.info(
+                f"{symbol}: signal quality {quality_score} below threshold "
+                f"{self.cfg.quality.min_quality_score} — SKIPPED"
+            )
+            return None
+
+        # ── Step 14: Calculate entry price ──
+        entry_price = last_close
+
+        # ── Step 15: Calculate SL ──
+        sl_price = self.risk_calc.calculate_sl(
+            signal_type=signal_type,
+            entry_price=entry_price,
+            highs=highs,
+            lows=lows,
+            closes=closes,
+            order_block_high=ob_high,
+            order_block_low=ob_low,
+            sweep_level=sweep.swept_price if sweep else None,
+        )
+
+        # ── Step 16: Calculate TP levels ──
+        tp_levels = self.risk_calc.calculate_tp_levels(
+            signal_type=signal_type,
+            entry_price=entry_price,
+            sl_price=sl_price,
+            highs=highs,
+            lows=lows,
+            closes=closes,
+            sweep_level=sweep.swept_price if sweep else None,
+        )
+
+        tp1 = tp_levels[0] if len(tp_levels) > 0 else 0.0
+        tp2 = tp_levels[1] if len(tp_levels) > 1 else 0.0
+        tp3 = tp_levels[2] if len(tp_levels) > 2 else 0.0
+
+        # ── Step 17: Final RR sanity check ──
+        if tp1 > 0:
+            rr = self.risk_calc.calculate_rr(entry_price, sl_price, tp1)
+            if rr < self.cfg.risk.min_rr_ratio:
+                logger.info(
+                    f"{symbol}: RR {rr} below {self.cfg.risk.min_rr_ratio} — SKIPPED"
+                )
+                return None
+
+        # ── Step 18: Build signal ──
+        confidence = "high" if quality_score >= 80 else "medium"
+        signal = StrategySignal(
+            symbol=symbol,
+            action=signal_type,
+            entry_price=entry_price,
+            sl=sl_price,
+            tp=tp1,
+            tp2=tp2,
+            tp3=tp3,
+            quality_score=quality_score,
+            signal_source="Quadapt_ML_Trader",
+            confidence=confidence,
+            metadata={
+                "mlma_value": mlma_val,
+                "supertrend_dir": st_dir,
+                "stoch_rsi_k": stoch_k,
+                "stoch_rsi_d": stoch_d,
+                "squeeze_release": sq_released,
+                "squeeze_active": sq_active,
+                "order_block_proximity": ob_proximity,
+                "mtf_alignment": mtf_score,
+                "regime": regime,
+                "envelope_strength": envelope_strength,
+                "bars_since_last_signal": bars_since_last,
+                "atr": atr_vals[-1] if atr_vals else None,
+                # NEW pillar diagnostics (for calibration / verification)
+                "sweep_direction": sweep.direction if sweep else None,
+                "sweep_wick_ratio": sweep.wick_ratio if sweep else None,
+                "pa_choch": struct.last_choch if struct else None,
+                "pa_displacement": disp,
+                "has_fvg": bool(fvg),
+                "rel_volume": rel_vol,
+                "ma200": ma200_val,
+            },
+        )
+
+        # ── Log for ML training ──
+        if self.cfg.log_signals:
+            market_features = {
+                "price": last_close,
+                "atr": atr_vals[-1] if atr_vals else None,
+                "regime": regime,
+                "mtf_alignment": mtf_score,
+                "supertrend_dir": st_dir,
+                "stoch_rsi_k": stoch_k,
+                "squeeze": sq_active,
+                "squeeze_release": sq_released,
+            }
+            self.ml_logger.log_signal(signal, market_features)
+
+        # ── Track last signal ──
+        self._last_signal[symbol] = (signal.generated_at, signal.entry_price)
+
+        logger.info(
+            f"✨ {symbol} {signal_type} @ {entry_price:.5f} "
+            f"| SL: {sl_price:.5f} TP: {tp1:.5f} "
+            f"| Score: {quality_score} | {confidence}"
+        )
+
+        return signal
+
+    def run_poll(self) -> List[StrategySignal]:
+        """Fetch market data for all symbols and evaluate.
+
+        Returns list of generated signals (one per symbol at most per poll).
+        """
+        signals: List[StrategySignal] = []
+        for symbol in self.cfg.market_data.symbols:
+            try:
+                snapshot = fetch_market_data(symbol)
+                signal = self.evaluate(snapshot)
+                if signal:
+                    signals.append(signal)
+            except Exception as e:
+                logger.error(f"Error evaluating {symbol}: {e}")
+                continue
+        return signals

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  // ----------------------------------------------------------
+  //  Project overrides for bunga-trader-v2
+  //  - Inherits all global config from
+  //    ~/.config/opencode/opencode.jsonc (MCPs, plugins, etc.)
+  //  - Only project-specific things go here
+  // ----------------------------------------------------------
+
+  "instructions": [
+    "Bunga Trader v2 is a money-trading system. NEVER auto-approve or auto-execute trades.",
+    "Always run `python -m pytest -q` after any change to `core_backend/`.",
+    "If a request touches `risk_engine.py` or `trade_dispatcher.py`, propose a plan first and ask for explicit approval before editing.",
+    "API keys live in `core_backend/config.py` from env vars — never hardcode, never log.",
+    "Use the existing multi-provider AI fallback chain in `ai_engine.py` (Google → Groq → OpenRouter) instead of adding new LLM SDKs.",
+    "Database is SQLite via SQLAlchemy 2.0 in `data/`. Use a temp SQLite file for tests, never mock the ORM."
+  ],
+
+  "plugin": [
+    "oh-my-opencode",
+    "opencode-mem",
+    "opencode-dynamic-context-pruning",
+    "opencode-snip",
+    "envsitter-guard"
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "loop": "bunga-trader-v2 compounding backtest loop",
+  "target": {
+    "start_balance_usd": 50.0,
+    "daily_profit_target_pct": 20.0,
+    "trading_days_per_week": 5,
+    "weeks_per_month": 4,
+    "compounding": true,
+    "refresh_and_compound": true,
+    "derived": {
+      "week_target_pct_compounding": 138.7,
+      "month_target_pct_compounding": 3733.7,
+      "week_target_usd_from_50": 119.66,
+      "month_target_usd_from_50": 1917.0
+    }
+  },
+  "risk": {
+    "model": "aggressive_compounding",
+    "lot_sizing": "micro_lot_per_balance_band",
+    "sl_tp": "atr_based_from_engine",
+    "daily_circuit_breaker_pct": 20.0,
+    "max_drawdown_guard_pct": 15.0,
+    "reality_note": "20%/day compounded is ~+3700%/mo; pathological. Loop reports TRUE simulated edge, not faked target."
+  },
+  "fidelity": {
+    "primary_backtester": "local_fx_replay_of_engine_on_historical_candles",
+    "secondary_check": "quantcontext_equity_proxy",
+    "data_source": "alpha_vantage_free_tier_or_mt5_export"
+  },
+  "iteration": 0,
+  "latest_metrics": null,
+  "accepted_thresholds": {
+    "daily_profit_pct_min": 20.0,
+    "max_drawdown_pct_max": 15.0,
+    "week_compounding_target_usd": 119.66,
+    "month_compounding_target_usd": 1917.0
+  },
+  "tracking": {
+    "results_ledger": "backtests/results.jsonl",
+    "graphify_scope": "core_backend/strategies/",
+    "langfuse": "not_installed_skipped"
+  }
+}

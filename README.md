@@ -1,0 +1,153 @@
+# Bunga Trader v2
+
+Local-first automated trading system with free LLM-powered signal validation, web dashboard, and mobile API.
+
+## What's New in v2
+
+- **Free LLM Fallback Stack** - Google AI Studio (1,500/day) → Groq (1,000/day) → OpenRouter (200/day)
+- **AI Signal Validation** - Hybrid rule-based + LLM scoring (0.0-1.0)
+- **Web Dashboard** - Dark theme, real-time updates, auto-approve toggle
+- **Mobile API** - `/mobile/*` endpoints optimized for Android/iOS apps
+- **Multi-TP Support** - Parse TP1, TP2, TP3 from signals
+- **Pending Orders** - BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP
+
+## Architecture
+
+```
+Telegram Channels → Listener → SQLite → Parser → AI Validation → Approval → WebSocket → Bridge → MT5
+                                    ↓
+                              Web Dashboard (http://localhost:8000)
+                                    ↓
+                              Mobile API (/mobile/*)
+```
+
+## Quick Start
+
+### 1. Prerequisites
+- Python 3.10+
+- MetaTrader 5 terminal
+- Telegram API credentials (https://my.telegram.org)
+- At least one free LLM API key
+
+### 2. Installation
+
+```bash
+cd bunga-trader-v2
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### 3. Configuration
+
+```bash
+cp .env.example .env
+# Edit .env with your credentials
+```
+
+### 4. Get Free LLM API Keys
+
+| Provider | URL | Free Tier |
+|----------|-----|-----------|
+| Google AI Studio | https://aistudio.google.com/app/apikey | 1,500 req/day |
+| Groq | https://console.groq.com/keys | 30 RPM / 1,000/day |
+| OpenRouter | https://openrouter.ai/keys | 20 RPM / 200/day |
+
+### 5. Run
+
+**Option A: Unified Runner (all 3 components)**
+```bash
+python run.py
+```
+
+**Option B: Separate Terminals**
+```bash
+# Terminal 1 - API + Dashboard
+uvicorn core_backend.main:app --host 127.0.0.1 --port 8000
+
+# Terminal 2 - Telegram Listener
+python -m core_backend.telegram_listener
+
+# Terminal 3 - MT5 Bridge
+python -m bridge_app.executor
+```
+
+### 6. Access Dashboard
+
+Open http://127.0.0.1:8000 in your browser.
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Web Dashboard |
+| `/health` | GET | Health check |
+| `/status` | GET | System status |
+| `/llm/status` | GET | LLM provider status |
+| `/signals/pending` | GET | List pending signals |
+| `/signals/{id}/approve` | POST | Approve & dispatch |
+| `/signals/{id}/reject` | POST | Reject signal |
+| `/signals/approve-all` | POST | Approve all pending |
+| `/trades` | GET | Trade history |
+| `/ws` | WS | Bridge WebSocket |
+| `/mobile/dashboard` | GET | Mobile dashboard data |
+| `/mobile/signals` | GET | Mobile signals list |
+| `/mobile/signals/{id}/approve` | POST | Approve & dispatch from mobile |
+| `/mobile/signals/{id}/reject` | POST | Reject from mobile |
+| `/mobile/notifications` | GET | Push notification data |
+
+## Signal Formats Supported
+
+```
+BUY EURUSD 1.2500 SL 1.2450 TP 1.2600
+SELL GBPUSD @ 1.2500 SL: 1.2450 TP: 1.2600
+BUY EURUSD Entry: 1.2500 SL: 1.2450 TP: 1.2600
+BUY USDJPY SL 140.00 TP 139.50
+BUY EURUSD 1.2500 SL 1.2450 TP1 1.2550 TP2 1.2600 TP3 1.2650
+BUY LIMIT EURUSD 1.2400 SL 1.2350 TP 1.2500
+```
+
+## Android App
+
+The mobile API at `/mobile/*` provides endpoints optimized for Android/iOS apps:
+
+```bash
+# Get dashboard data (single call)
+GET /mobile/dashboard
+
+# Get signals
+GET /mobile/signals?status=pending&limit=50
+
+# Get notification data
+GET /mobile/notifications
+
+# Approve/reject
+POST /mobile/signals/{id}/approve
+POST /mobile/signals/{id}/reject
+```
+
+Approval endpoints require `X-API-Key` when `API_KEY` is configured. The web dashboard includes a small key entry panel that stores the key in the current browser session.
+
+## LLM Provider Stack
+
+The system automatically falls through providers when rate limits are hit:
+
+1. **Google AI Studio** (Gemini 2.0 Flash) - Primary, 1,500/day
+2. **Groq** (Llama 3.3 70B) - Fallback 1, 1,000/day
+3. **OpenRouter** (Llama 3.3 70B) - Fallback 2, 200/day
+
+Borderline signals (score 0.2-0.85) get LLM analysis. Clear signals skip LLM to save quota.
+
+## Risk Management
+
+- Lot sizing based on account balance, risk %, and SL distance
+- Daily P&L-based gating: stop trading on loss limit or profit target
+- Consecutive loss circuit breaker
+- Max lot cap
+- Manual approval required for every trade from dashboard/mobile
+- Duplicate prevention and position tracking
+- Note: day-stopping gating is P&L-based, not trade-count-based, so API rate limits should be managed via polling interval rather than daily trade caps
+
+## License
+
+MIT
