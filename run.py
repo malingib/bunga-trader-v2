@@ -44,6 +44,8 @@ def main():
     venv_uvicorn = Path(__file__).parent / ".venv" / "bin" / "uvicorn"
 
     env = os.environ.copy()
+    # Strip Hermes PYTHONPATH so 3.12 venv doesn't load 3.11 packages
+    env.pop("PYTHONPATH", None)
 
     if venv_python.exists():
         env["VIRTUAL_ENV"] = str((Path(__file__).parent / ".venv").resolve())
@@ -55,16 +57,9 @@ def main():
     import time
     time.sleep(3)
 
-    tel_cmd = f"{venv_python} -m core_backend.telegram_listener" if venv_python.exists() else "python3 -m core_backend.telegram_listener"
-    mt5_cmd = f"{venv_python} -m bridge_app.executor" if venv_python.exists() else "python3 -m bridge_app.executor"
-
-    start_component("Telegram Listener", tel_cmd, env=env)
-    start_component("MT5 Bridge", mt5_cmd, env=env)
-
     print()
     print("All components started!")
-    print("Dashboard: http://127.0.0.1:8000")
-    print("API Docs: http://127.0.0.1:8000/docs")
+    print("Dashboard: http://127.0.0.1:8000  |  API Docs: http://127.0.0.1:8000/docs")
     print()
     print("Press Ctrl+C to stop all components")
     print("="*60)

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Bunga Trader</title>
   <link rel="stylesheet" href="/static/css/style.css">
+  <script src="https://s3.tradingview.com/tv.js"></script>
 </head>
 <body>
   <div class="container">
@@ -22,14 +23,7 @@
       </div>
       <div class="section-body auth-body">
         <div class="auth-controls">
-          <input
-            id="api-key-input"
-            class="auth-input"
-            type="password"
-            placeholder="Enter X-API-Key for approvals"
-            autocomplete="off"
-            spellcheck="false"
-          >
+          <input id="api-key-input" class="auth-input" type="password" placeholder="Enter X-API-Key for approvals" autocomplete="off" spellcheck="false">
           <button class="btn btn-primary" onclick="saveApiKey()">Save Key</button>
           <button class="btn btn-secondary" onclick="clearApiKey()">Clear</button>
         </div>
@@ -60,11 +54,68 @@
       </div>
     </div>
 
+    <!-- ── Broker Connection ── -->
     <div class="section">
-      <div class="section-header"><h2>LLM Providers</h2></div>
-      <div class="llm-status" id="llm-status">
-        <div class="llm-provider"><span class="dot" style="width:6px;height:6px;"></span> Loading...</div>
+      <div class="section-header">
+        <h2>🔌 Broker Connection</h2>
+        <span id="broker-status-badge" class="mini-badge inactive">No broker</span>
       </div>
+      <div class="section-body">
+        <div class="broker-controls">
+          <div class="broker-select-row">
+            <select id="broker-select" class="broker-select" onchange="onBrokerSelectChange()">
+              <option value="">— No broker —</option>
+              <option value="oanda">OANDA (REST)</option>
+              <option value="deriv">Deriv (WebSocket)</option>
+            </select>
+            <button class="btn btn-secondary" onclick="connectBroker()" id="broker-connect-btn">Connect</button>
+            <button class="btn btn-danger" onclick="disconnectBroker()" id="broker-disconnect-btn" style="display:none;">Disconnect</button>
+          </div>
+          <div class="broker-info-row" id="broker-info-row" style="display:none;">
+            <span>Balance: <strong id="broker-balance">—</strong></span>
+            <span class="broker-connected-dot" id="broker-connected-dot"></span>
+            <span id="broker-connected-label">Disconnected</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Live Charts Grid (4 symbols simultaneously) ── -->
+    <div class="section">
+      <div class="section-header">
+        <h2>📊 Live Charts</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span id="price-strip-mini"></span>
+        </div>
+      </div>
+      <div class="section-body" style="padding:0">
+        <div class="chart-grid">
+          <div class="chart-cell">
+            <div class="chart-cell-label">XAUUSD</div>
+            <div id="tv-chart-xauusd" class="tv-chart-mini"></div>
+          </div>
+          <div class="chart-cell">
+            <div class="chart-cell-label">SP500</div>
+            <div id="tv-chart-sp500" class="tv-chart-mini"></div>
+          </div>
+          <div class="chart-cell">
+            <div class="chart-cell-label">NAS100</div>
+            <div id="tv-chart-nas100" class="tv-chart-mini"></div>
+          </div>
+          <div class="chart-cell">
+            <div class="chart-cell-label">EURUSD</div>
+            <div id="tv-chart-eurusd" class="tv-chart-mini"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Live Prices Strip ── -->
+    <div class="price-strip" id="price-strip">
+      <span class="price-tile" id="price-XAUUSD">XAUUSD —</span>
+      <span class="price-tile" id="price-SP500">SP500 —</span>
+      <span class="price-tile" id="price-NAS100">NAS100 —</span>
+      <span class="price-tile" id="price-EURUSD">EURUSD —</span>
     </div>
 
     <!-- ── Strategy Engine Panel ── -->
@@ -72,13 +123,49 @@
       <div class="section-header">
         <h2>🤖 Quadapt ML Trader</h2>
         <div style="display: flex; gap: 8px; align-items: center;">
-          <button class="btn btn-secondary" onclick="forceStrategyPoll()">Poll Now</button>
+          <button class="btn btn-secondary" onclick="forceStrategyPoll()" id="strategy-poll-btn">Poll Now</button>
           <span id="strategy-status" class="mini-badge">Loading...</span>
         </div>
       </div>
       <div class="section-body">
         <div class="strategy-grid" id="strategy-grid">
           <div class="loading-row">Loading strategy status...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Strategy Controls ── -->
+    <div class="section">
+      <div class="section-header">
+        <h2>🎛 Strategy Controls</h2>
+      </div>
+      <div class="section-body">
+        <div class="controls-grid">
+          <div class="control-item">
+            <span class="control-label">Engine</span>
+            <button id="pause-resume-btn" class="btn btn-danger" data-paused="false" onclick="toggleStrategyPause()">⏸ Pause Engine</button>
+          </div>
+          <div class="control-item">
+            <span class="control-label">Quality Threshold</span>
+            <div class="slider-group">
+              <input type="range" id="quality-slider" min="60" max="95" value="75" class="quality-slider" oninput="document.getElementById('quality-val').textContent=this.value" onchange="updateStrategyConfig('quality_threshold', parseInt(this.value))">
+              <span id="quality-val" class="slider-val">75</span>
+            </div>
+          </div>
+          <div class="control-item">
+            <span class="control-label">Momentum Breakout</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="momentum-toggle" onchange="updateStrategyConfig('momentum_enabled', this.checked)">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="control-item">
+            <span class="control-label">Trend Gate</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="trend-gate-toggle" onchange="updateStrategyConfig('trend_gate_enabled', this.checked)">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
         </div>
       </div>
     </div>
@@ -113,9 +200,17 @@
       </div>
     </div>
 
+    <!-- ── Recent Trades (with pagination) ── -->
     <div class="section">
-      <div class="section-header"><h2>Recent Trades</h2></div>
-      <div class="section-body">
+      <div class="section-header">
+        <h2>Recent Trades</h2>
+        <div class="pagination-controls" id="trades-pagination">
+          <span id="trades-range">0-0 of 0</span>
+          <button class="btn btn-sm" onclick="prevTradesPage()" id="trades-prev" disabled>‹ Prev</button>
+          <button class="btn btn-sm" onclick="nextTradesPage()" id="trades-next" disabled>Next ›</button>
+        </div>
+      </div>
+      <div class="section-body" style="padding:0">
         <table class="trade-table">
           <thead>
             <tr><th>Symbol</th><th>Action</th><th>Lot</th><th>Result</th><th>P&L</th><th>Time</th></tr>
@@ -124,6 +219,80 @@
             <tr><td colspan="6" class="empty-state" style="padding: 40px;">Loading trades...</td></tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- ── Performance ── -->
+    <div class="section">
+      <div class="section-header">
+        <h2>📈 Performance</h2>
+      </div>
+      <div class="section-body">
+        <div class="perf-stats">
+          <div class="perf-stat">
+            <div class="ps-label">Win Rate</div>
+            <div class="value accent" id="perf-win-rate">—</div>
+          </div>
+          <div class="perf-stat">
+            <div class="ps-label">Total Trades</div>
+            <div class="value" id="perf-total-trades">—</div>
+          </div>
+          <div class="perf-stat">
+            <div class="ps-label">Total P&L</div>
+            <div class="value" id="perf-total-pnl">—</div>
+          </div>
+          <div class="perf-stat">
+            <div class="ps-label">Best Day</div>
+            <div class="value accent" id="perf-best-day">—</div>
+          </div>
+          <div class="perf-stat">
+            <div class="ps-label">Worst Day</div>
+            <div class="value danger" id="perf-worst-day">—</div>
+          </div>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title">Equity Curve</div>
+          <canvas id="equity-chart-canvas" width="600" height="200"></canvas>
+        </div>
+        <div class="chart-container">
+          <div class="chart-title">Daily P&L (Last 10)</div>
+          <canvas id="daily-pnl-canvas" width="600" height="100"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Per-Symbol Performance ── -->
+    <div class="section">
+      <div class="section-header">
+        <h2>🎯 Per-Symbol Performance</h2>
+        <button class="btn btn-sm" onclick="loadPerSymbolPerformance()">↻ Refresh</button>
+      </div>
+      <div class="section-body" style="padding:0">
+        <table class="trade-table" id="perf-symbol-table">
+          <thead>
+            <tr><th>Symbol</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>P&L</th><th>Avg P&L</th></tr>
+          </thead>
+          <tbody id="perf-symbol-body">
+            <tr><td colspan="7" class="empty-state" style="padding: 30px;">No trade data yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Live Logs ── -->
+    <div class="section">
+      <div class="section-header">
+        <h2>📄 Live Logs</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span id="log-file-name" class="mini-badge" style="font-size:11px">—</span>
+          <button class="btn btn-sm" onclick="toggleLogAutoRefresh()" id="log-toggle-btn">⏸ Pause</button>
+          <button class="btn btn-sm" onclick="loadLogs()">↻ Refresh</button>
+        </div>
+      </div>
+      <div class="section-body" style="padding:0">
+        <div class="log-viewer" id="log-viewer">
+          <div class="log-line log-empty">No log data yet. Run the system to see logs.</div>
+        </div>
       </div>
     </div>
   </div>

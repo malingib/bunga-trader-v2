@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -37,6 +37,7 @@ from .indicators import (
 )
 from . import price_action
 from .market_data import MarketSnapshot, fetch_market_data
+from .momentum_breakout import MomentumBreakoutStrategy, MomentumConfig as MomCfg
 from .quality_engine import SignalQualityEngine
 from .risk import RiskCalculator
 from ..logger import setup_logger
@@ -66,6 +67,7 @@ class StrategySignal:
         signal_source: str,
         confidence: str = "medium",
         generated_at: Optional[datetime] = None,
+        hold_bars: int = 0,
         metadata: Optional[dict] = None,
     ):
         self.symbol = symbol
@@ -78,7 +80,10 @@ class StrategySignal:
         self.quality_score = quality_score
         self.signal_source = signal_source
         self.confidence = confidence
-        self.generated_at = generated_at or datetime.utcnow()
+        self.generated_at = generated_at or datetime.now(timezone.utc).replace(tzinfo=None)
+        # For time-based (mean-reversion) exits: hold this many bars, then close
+        # at market. 0 = use SL/TP only (no time exit).
+        self.hold_bars = hold_bars
         self.metadata = metadata or {}
 
     def to_dict(self) -> dict:
@@ -145,7 +150,7 @@ class MLDataLogger:
     def __init__(self) -> None:
         self.data_dir = Path(QUADAPT_CFG.ml_data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self._session_file = self.data_dir / f"session_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.jsonl"
+        self._session_file = self.data_dir / f"session_{datetime.now(timezone.utc).replace(tzinfo=None).strftime('%Y%m%d_%H%M%S')}.jsonl"
         self._feature_file = self.data_dir / "training_data.jsonl"
 
     def log_signal(
@@ -188,18 +193,78 @@ class MLDataLogger:
     def update_outcome(
         self, symbol: str, entry_time: datetime, outcome: str, pnl: float
     ) -> None:
-        """Update a previously logged signal with its outcome."""
-        # For now, append outcome record — reconciliation can be done offline
+        """Update a previously logged signal with its outcome.
+
+        Performs in-place reconciliation on training_data.jsonl: reads the
+        cumulative file, matches records by (symbol, entry_time), backfills
+        outcome + pnl, and writes back. Also logs to the session file for
+        audit trail.
+        """
+        # Log outcome-update record to session file for audit
         record = {
             "type": "outcome_update",
             "symbol": symbol,
             "entry_time": entry_time.isoformat(),
             "outcome": outcome,
             "pnl": pnl,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
         }
         with open(self._session_file, "a") as f:
             f.write(json.dumps(record) + "\n")
+
+        # In-place reconciliation on cumulative training file
+        if not self._feature_file.exists():
+            return
+
+        entry_iso = entry_time.isoformat()
+        updated = False
+        lines = self._feature_file.read_text().splitlines()
+        out_lines: list[str] = []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                out_lines.append(line)
+                continue
+            # Match by symbol + entry_time (first-match wins)
+            if (
+                not updated
+                and obj.get("symbol") == symbol
+                and obj.get("timestamp") == entry_iso
+                and obj.get("outcome") is None
+            ):
+                obj["outcome"] = outcome
+                obj["pnl"] = pnl
+                obj["closed_at"] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+                out_lines.append(json.dumps(obj))
+                updated = True
+            else:
+                out_lines.append(line)
+        self._feature_file.write_text("\n".join(out_lines) + "\n")
+        if updated:
+            logger.info(f"ML outcome backfilled: {symbol} @ {entry_iso} → {outcome}")
+        else:
+            logger.warning(
+                f"ML outcome not matched in training data: {symbol} @ {entry_iso}"
+            )
+
+
+# Module-level logger instance for external callers
+_ml_logger_instance: Optional[MLDataLogger] = None
+
+
+def get_ml_logger() -> MLDataLogger:
+    global _ml_logger_instance
+    if _ml_logger_instance is None:
+        _ml_logger_instance = MLDataLogger()
+    return _ml_logger_instance
+
+
+def log_trade_outcome(symbol: str, entry_time: datetime, outcome: str, pnl: float) -> None:
+    """Called when a trade closes — backfills outcome into ML training data."""
+    get_ml_logger().update_outcome(symbol, entry_time, outcome, pnl)
 
 
 # ──────────────────────────────────────────────
@@ -217,7 +282,76 @@ class QuadaptEngine:
         self.ml_logger = MLDataLogger()
 
         # Track last signal per symbol (for clustering prevention)
-        self._last_signal: Dict[str, Tuple[datetime, str, float]] = {}
+        self._last_signal: Dict[str, Tuple[datetime, float]] = {}
+        # Per-direction dedup for momentum path (symbol+action -> generated_at)
+        self._last_momentum_signal: Dict[str, datetime] = {}
+
+    def _mean_reversion_trigger(
+        self,
+        closes: List[float],
+        highs: List[float],
+        lows: List[float],
+        opens: List[float],
+    ) -> Optional[Tuple[str, int, float]]:
+        """Mean-reversion entry trigger — the proven edge on XAUUSD 1-min.
+
+        The edge is a **StochRSI %K cross out of an extreme**:
+          - BUY  when %K crosses UP through %D while %K < stoch_rsi_oversold
+          - SELL when %K crosses DOWN through %D while %K > stoch_rsi_overbought
+
+        This waits for the actual momentum TURN (not just an extreme reading),
+        which is what survives realistic next-bar-open fill. The exit is
+        time-based (close at market after `hold_bars`), which avoids 1-min
+        stop-clipping that kills fixed SL/TP reversion. A wide protective stop
+        guards runaway gaps.
+
+        Returns (direction, hold_bars, protective_sl_atr) or None.
+        """
+        cfg = self.cfg.trigger
+        n = len(closes)
+        if n < cfg.stoch_rsi_rsi_length + cfg.stoch_rsi_stoch_length + 5:
+            return None
+        i = n - 1
+
+        k_line, d_line = stoch_rsi(
+            closes, cfg.stoch_rsi_rsi_length, cfg.stoch_rsi_stoch_length,
+            cfg.stoch_rsi_smooth_k, cfg.stoch_rsi_smooth_d,
+        )
+        k, k_prev = k_line[i], k_line[i - 1]
+        d, d_prev = d_line[i], d_line[i - 1]
+        if math.isnan(k) or math.isnan(d) or math.isnan(k_prev) or math.isnan(d_prev):
+            return None
+        crossed_up = (k_prev <= d_prev) and (k > d)
+        crossed_down = (k_prev >= d_prev) and (k < d)
+
+        # Optional raw-RSI filter: require RSI also on the extreme side.
+        if cfg.require_rsi_filter:
+            r_vals = rsi(closes, cfg.rsi_period)
+            r = r_vals[i]
+            if r is None or math.isnan(r):
+                return None
+            if crossed_up and r >= 50:
+                return None
+            if crossed_down and r <= 50:
+                return None
+
+        # Optional range-stretch: price must be stretched vs 20-bar mean.
+        if cfg.require_range_stretch:
+            look = min(20, n)
+            mean = sum(closes[-look:]) / look
+            atr_vals = atr(highs, lows, closes, 14)
+            a = atr_vals[-1] if atr_vals and not math.isnan(atr_vals[-1]) else 0.0
+            if a <= 0:
+                a = closes[-1] * 0.005
+            dist = abs(closes[-1] - mean)
+            if dist < cfg.range_stretch_pct * a:
+                return None
+
+        if crossed_up and k < cfg.stoch_rsi_oversold:
+            return ("BUY", cfg.hold_bars, cfg.protective_sl_atr)
+        if crossed_down and k > cfg.stoch_rsi_overbought:
+            return ("SELL", cfg.hold_bars, cfg.protective_sl_atr)
+        return None
 
     def evaluate(self, snapshot: MarketSnapshot) -> Optional[StrategySignal]:
         """Run the full strategy pipeline on a market snapshot.
@@ -263,7 +397,7 @@ class QuadaptEngine:
                     self.cfg.envelopes.max_envelope_multiplier, envelope_mult_primary * 1.5
                 )
 
-        # ── Step 3: TRIGGER = liquidity sweep (pillar ①) ──
+        # ── Step 3: TRIGGER (selected by cfg.trigger.mode) ──
         # Envelope is DEMOTED to a confluence weight (it is NO LONGER a trigger).
         # Sweeps/PA/gate run on RAW candles; only the envelope weight uses HA.
         i = len(closes) - 1  # current index
@@ -272,6 +406,8 @@ class QuadaptEngine:
         disp: Optional[float] = None
         struct = None
         fvg = None
+        sweep = None
+        reversion = False  # True when the mean-reversion trigger fired
 
         # 200MA (pillar ③) computed on RAW closes — gates counter-trend entries.
         ma200 = sma(closes, self.cfg.trend_gate.ma_period)
@@ -300,24 +436,40 @@ class QuadaptEngine:
         else:
             envelope_strength = 0.5
 
-        # ── Liquidity sweep trigger on RAW OHLC (sweeps are real-price events) ──
-        swings = swing_points(highs, lows, self.cfg.sweep.swing_left, self.cfg.sweep.swing_right)
-        sweep = None
-        if self.cfg.sweep.enabled:
-            sweep = detect_liquidity_sweep(
-                highs, lows, opens, closes,
-                swings=swings,
-                swing_lookback=self.cfg.sweep.swing_lookback,
-                min_wick_ratio=self.cfg.sweep.min_wick_ratio,
-            )
-        signal_type = sweep.direction if sweep else None
+        # ── DISPATCH on trigger mode ──
+        rev_hold_bars = 0
+        rev_protective_sl = 0.0
+        if self.cfg.trigger.mode == "mean_reversion":
+            rev = self._mean_reversion_trigger(closes, highs, lows, opens)
+            if rev is not None:
+                signal_type, rev_hold_bars, rev_protective_sl = rev
+                reversion = True
+                swings = swing_points(
+                    highs, lows, self.cfg.sweep.swing_left, self.cfg.sweep.swing_right
+                )
+            else:
+                signal_type = None
+                swings = None
+        else:
+            # ── Liquidity sweep trigger on RAW OHLC (sweeps are real-price events) ──
+            swings = swing_points(highs, lows, self.cfg.sweep.swing_left, self.cfg.sweep.swing_right)
+            if self.cfg.sweep.enabled:
+                sweep = detect_liquidity_sweep(
+                    highs, lows, opens, closes,
+                    swings=swings,
+                    swing_lookback=self.cfg.sweep.swing_lookback,
+                    min_wick_ratio=self.cfg.sweep.min_wick_ratio,
+                )
+            signal_type = sweep.direction if sweep else None
 
         if signal_type is None:
-            # No sweep -> no trade. The envelope is a weight, not a trigger.
+            # No trigger -> no trade. The envelope is a weight, not a trigger.
             return None
 
         # ── Step 3b: HARD trend GATE (pillar ③) — blocks counter-trend entries ──
-        if self.cfg.trend_gate.enabled and ma200_val is not None:
+        # In mean-reversion mode the gate is SKIPPED on purpose: a reversion BUY
+        # is *supposed* to fire when price is stretched below the MA/VWAP.
+        if not reversion and self.cfg.trend_gate.enabled and ma200_val is not None:
             band = self.cfg.trend_gate.vwap_band_pct * last_close
             if self.cfg.trend_gate.require_200ma_alignment:
                 if signal_type == "BUY" and last_close < ma200_val:
@@ -354,16 +506,20 @@ class QuadaptEngine:
         struct = price_action.classify_structure(highs, lows, swings=swings)
         fvg = fvg_detect(highs, lows, closes) if pa.use_fvg_boost else None
         if pa.enabled:
-            if pa.require_displacement and disp < pa.displacement_mult:
-                logger.debug(f"{symbol}: PA displacement too weak ({disp:.2f}xATR)")
-                return None
-            if pa.require_choch_alignment and struct.last_choch:
-                if signal_type == "BUY" and struct.last_choch == "SELL":
-                    logger.debug(f"{symbol}: PA CHoCH bias contradicts BUY")
+            # In mean-reversion mode the PA hard-gates are skipped: a reversion
+            # fade fires ON a stretched/weak candle, so displacement + CHoCH
+            # filters would reject exactly the setups that have edge.
+            if not reversion:
+                if pa.require_displacement and disp < pa.displacement_mult:
+                    logger.debug(f"{symbol}: PA displacement too weak ({disp:.2f}xATR)")
                     return None
-                if signal_type == "SELL" and struct.last_choch == "BUY":
-                    logger.debug(f"{symbol}: PA CHoCH bias contradicts SELL")
-                    return None
+                if pa.require_choch_alignment and struct.last_choch:
+                    if signal_type == "BUY" and struct.last_choch == "SELL":
+                        logger.debug(f"{symbol}: PA CHoCH bias contradicts BUY")
+                        return None
+                    if signal_type == "SELL" and struct.last_choch == "BUY":
+                        logger.debug(f"{symbol}: PA CHoCH bias contradicts SELL")
+                        return None
             if pa.min_rejection_wick > 0:
                 tail, _ = price_action.wick_ratio(highs, lows, opens, closes)
                 if tail < pa.min_rejection_wick:
@@ -545,6 +701,7 @@ class QuadaptEngine:
             pa_structure=struct,
             has_fvg=bool(fvg),
             rel_volume=rel_vol,
+            reversion_signal=reversion,
         )
 
         if not self.quality_engine.meets_threshold(quality_score):
@@ -558,34 +715,45 @@ class QuadaptEngine:
         entry_price = last_close
 
         # ── Step 15: Calculate SL ──
-        sl_price = self.risk_calc.calculate_sl(
-            signal_type=signal_type,
-            entry_price=entry_price,
-            highs=highs,
-            lows=lows,
-            closes=closes,
-            order_block_high=ob_high,
-            order_block_low=ob_low,
-            sweep_level=sweep.swept_price if sweep else None,
-        )
+        if reversion and rev_protective_sl > 0:
+            # Reversion uses a WIDE protective stop (time-exit is the real exit).
+            # This guards runaway gaps; it is never meant to be the primary exit.
+            a = atr_vals[-1] if atr_vals and not math.isnan(atr_vals[-1]) else entry_price * 0.005
+            prot = a * rev_protective_sl
+            sl_price = entry_price - prot if signal_type == "BUY" else entry_price + prot
+        else:
+            sl_price = self.risk_calc.calculate_sl(
+                signal_type=signal_type,
+                entry_price=entry_price,
+                highs=highs,
+                lows=lows,
+                closes=closes,
+                order_block_high=ob_high,
+                order_block_low=ob_low,
+                sweep_level=sweep.swept_price if sweep else None,
+            )
 
         # ── Step 16: Calculate TP levels ──
-        tp_levels = self.risk_calc.calculate_tp_levels(
-            signal_type=signal_type,
-            entry_price=entry_price,
-            sl_price=sl_price,
-            highs=highs,
-            lows=lows,
-            closes=closes,
-            sweep_level=sweep.swept_price if sweep else None,
-        )
-
-        tp1 = tp_levels[0] if len(tp_levels) > 0 else 0.0
-        tp2 = tp_levels[1] if len(tp_levels) > 1 else 0.0
-        tp3 = tp_levels[2] if len(tp_levels) > 2 else 0.0
+        if reversion:
+            # No fixed TP — the trade is closed at market after hold_bars.
+            tp1 = tp2 = tp3 = 0.0
+        else:
+            tp_levels = self.risk_calc.calculate_tp_levels(
+                signal_type=signal_type,
+                entry_price=entry_price,
+                sl_price=sl_price,
+                highs=highs,
+                lows=lows,
+                closes=closes,
+                sweep_level=sweep.swept_price if sweep else None,
+            )
+            tp1 = tp_levels[0] if len(tp_levels) > 0 else 0.0
+            tp2 = tp_levels[1] if len(tp_levels) > 1 else 0.0
+            tp3 = tp_levels[2] if len(tp_levels) > 2 else 0.0
 
         # ── Step 17: Final RR sanity check ──
-        if tp1 > 0:
+        # Skipped for reversion (time-exit model, no fixed RR).
+        if not reversion and tp1 > 0:
             rr = self.risk_calc.calculate_rr(entry_price, sl_price, tp1)
             if rr < self.cfg.risk.min_rr_ratio:
                 logger.info(
@@ -606,6 +774,7 @@ class QuadaptEngine:
             quality_score=quality_score,
             signal_source="Quadapt_ML_Trader",
             confidence=confidence,
+            hold_bars=rev_hold_bars,
             metadata={
                 "mlma_value": mlma_val,
                 "supertrend_dir": st_dir,
@@ -660,14 +829,85 @@ class QuadaptEngine:
 
         Returns list of generated signals (one per symbol at most per poll).
         """
+        # Use momentum breakout strategy when configured
+        if self.cfg.momentum.enabled:
+            return self._run_momentum_poll()
+
         signals: List[StrategySignal] = []
         for symbol in self.cfg.market_data.symbols:
             try:
-                snapshot = fetch_market_data(symbol)
+                snapshot = fetch_market_data(symbol, interval=self.cfg.market_data.interval)
                 signal = self.evaluate(snapshot)
                 if signal:
                     signals.append(signal)
             except Exception as e:
                 logger.error(f"Error evaluating {symbol}: {e}")
+                continue
+        return signals
+
+    def _run_momentum_poll(self) -> List[StrategySignal]:
+        """Run momentum breakout strategy for all configured symbols."""
+        mc = self.cfg.momentum
+        signals: List[StrategySignal] = []
+        for symbol in self.cfg.market_data.symbols:
+            try:
+                snapshot = fetch_market_data(symbol, interval=self.cfg.market_data.interval)
+                if not snapshot or len(snapshot.closes) < mc.warmup:
+                    continue
+                # Build per-symbol config
+                sym_cfg = mc.defaults.get(symbol, {})
+                cfg = MomCfg(
+                    lookback=mc.lookback,
+                    sl_atr=sym_cfg.get("sl_atr", 1.2),
+                    rr=sym_cfg.get("rr", 1.5),
+                    max_hold=mc.max_hold,
+                    atr_period=mc.atr_period,
+                    trend_ema=sym_cfg.get("trend_ema", 0),
+                    warmup=mc.warmup,
+                )
+                strat = MomentumBreakoutStrategy(cfg)
+                result = strat.check_latest(
+                    snapshot.opens, snapshot.highs,
+                    snapshot.lows, snapshot.closes,
+                    symbol=symbol,
+                )
+                if result is None:
+                    continue
+                sig = StrategySignal(
+                    symbol=result["symbol"],
+                    action=result["action"],
+                    entry_price=result["entry_price"],
+                    sl=result["sl"],
+                    tp=result["tp"],
+                    quality_score=result["quality_score"],
+                    signal_source=result["signal_source"],
+                    confidence=result["confidence"],
+                    hold_bars=result["hold_bars"],
+                    generated_at=datetime.fromisoformat(result["generated_at"]),
+                    metadata=result.get("metadata"),
+                )
+
+                # Per-direction dedup: skip same symbol+direction within 120s
+                dedup_key = f"{symbol}:{sig.action}"
+                if dedup_key in self._last_momentum_signal:
+                    elapsed = (sig.generated_at - self._last_momentum_signal[dedup_key]).total_seconds()
+                    if elapsed < 120:
+                        continue
+
+                signals.append(sig)
+                self._last_momentum_signal[dedup_key] = sig.generated_at
+                # Store same format as evaluate() so cluster prevention works cross-path
+                self._last_signal[symbol] = (sig.generated_at, sig.entry_price)
+
+                # ML logging for self-learning pipeline
+                # TODO: enrich market_features for momentum path (ATR, volume, RSI, regime)
+                self.ml_logger.log_signal(sig, market_features={})
+
+                logger.info(
+                    f"✨ [Momentum] {symbol} {sig.action} @ {sig.entry_price:.2f} "
+                    f"| SL: {sig.sl:.2f} TP: {sig.tp:.2f}"
+                )
+            except Exception as e:
+                logger.error(f"Error in momentum poll for {symbol}: {e}")
                 continue
         return signals

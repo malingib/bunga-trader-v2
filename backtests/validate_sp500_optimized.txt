@@ -1,0 +1,35 @@
+======================================================================
+OPTIMIZED — Momentum Breakout (SP500 1-min)
+======================================================================
+  Data: 22987 candles ($7500.50 → $7539.00, +0.51%)
+  Method: 2-bar breakout + bullish/bearish bar confirmation
+  Exit: ATR(14)-based SL/TP + 15-bar time exit
+  Sizing: Fixed 1.0 units
+
+Config                       Return  Win% Trades      DD
+------------------------------------------------------------
+  SL=1.2 RR=1.5             +28.19%  42.5  3411  14.2%
+  SL=1.2 RR=2.0              +3.97%  36.8  2888  27.8%
+  SL=1.0 RR=1.5              +4.08%  41.1  4135  18.3%
+  SL=1.0 RR=2.0             +13.82%  35.5  3487  20.2%
+  SL=1.4 RR=1.5             -13.08%  41.8  2894  23.3%
+  SL=0.8 RR=2.5              +7.33%  30.0  3861  15.6%
+
+────────────────────────────────────────────────────────────
+WALK-FORWARD (4 quarters, SL=1.2 RR=1.5):
+  Q1: Return=   +0.34% Trades= 840 Win%= 40.2 DD= 10.9%
+  Q2: Return=   +4.96% Trades= 882 Win%= 42.2 DD= 14.2%
+  Q3: Return=  +11.74% Trades= 846 Win%= 43.1 DD=  6.2%
+  Q4: Return=  +11.23% Trades= 843 Win%= 44.5 DD=  5.8%
+  ──────────────────────────────────────
+  Full: +28.19% DD=14.2% Trades=3411
+  Quarters: 0/4 negative | Avg quarterly: +7.07%
+  Min equity: $884.93 (11.5% max dd)
+
+======================================================================
+CONCLUSION:
+  Best config (SL=1.2×, RR=1.5×): 28.19% on SP500 1-min
+  Walk-forward: 4/4 positive quarters
+  Average quarterly: +7.07%
+  >5% target MET ✓
+======================================================================

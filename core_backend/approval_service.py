@@ -1,19 +1,17 @@
 """Shared signal approval/rejection workflow used by web and mobile APIs."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from .ai_engine import ai_validate_signal
 from .config import CONFIG
 from .logger import setup_logger
-from .models import ParsedSignal, SignalStatus
+from .models import ParsedSignal, SignalStatus, TradeLog
 from .risk_engine import calculate_lot_size, validate_signal_risk
 from .symbols import is_supported_symbol
-from .trade_dispatcher import manager
 
 logger = setup_logger("ApprovalService")
 
@@ -45,8 +43,74 @@ def _reset_dispatch_state(signal: ParsedSignal) -> None:
 def _signal_age_minutes(signal: ParsedSignal) -> float:
     if not signal.parsed_at:
         return 0.0
-    delta = datetime.utcnow() - signal.parsed_at
+    delta = datetime.now(timezone.utc).replace(tzinfo=None) - signal.parsed_at
     return delta.total_seconds() / 60.0
+
+
+async def _dispatch_via_broker(signal: ParsedSignal) -> Optional[Dict[str, Any]]:
+    """Attempt to execute the approved signal through the active broker.
+    Returns None if no active broker is connected, or a result dict."""
+    from .brokers import get_active
+
+    broker = get_active()
+    if broker is None or not broker.is_connected:
+        return None
+
+    try:
+        result = await broker.place_order(
+            action=signal.action,
+            symbol=signal.symbol,
+            entry_price=signal.entry_price,
+            sl=signal.sl,
+            tp=signal.tp,
+            tp2=signal.tp2,
+            tp3=signal.tp3,
+            lot=signal.lot_size or 0.0,
+        )
+        if result.success:
+            logger.info(
+                "Broker %s executed signal %s: id=%s fill=%s",
+                broker.name, signal.id, result.order_id, result.fill_price,
+            )
+            return {
+                "broker": broker.name,
+                "order_id": result.order_id,
+                "fill_price": result.fill_price,
+                "filled_units": result.filled_units,
+            }
+        else:
+            logger.warning(
+                "Broker %s rejected signal %s: %s",
+                broker.name, signal.id, result.error,
+            )
+            return {
+                "broker": broker.name,
+                "error": result.error,
+            }
+    except Exception as exc:
+        logger.error("Broker %s error for signal %s: %s", broker.name, signal.id, exc)
+        return {"broker": broker.name, "error": str(exc)}
+
+
+def _create_trade_log(signal: ParsedSignal, db: Session, broker_result: Optional[Dict[str, Any]] = None) -> TradeLog:
+    """Create a TradeLog entry after successful execution."""
+    trade = TradeLog(
+        parsed_signal_id=signal.id,
+        symbol=signal.symbol,
+        action=signal.action,
+        lot_size=signal.lot_size or 0.0,
+        entry_price=(
+            broker_result.get("fill_price") or signal.entry_price
+            if broker_result else signal.entry_price
+        ),
+        sl=signal.sl,
+        tp=signal.tp,
+        result="executed",
+        executed_at=datetime.now(timezone.utc).replace(tzinfo=None),
+    )
+    db.add(trade)
+    db.flush()
+    return trade
 
 
 async def approve_signal_by_id(
@@ -72,23 +136,6 @@ async def approve_signal_by_id(
             "Expiry",
             f"Signal is {age_minutes:.1f} minutes old; max age is {SIGNAL_MAX_AGE_MINUTES} minutes",
             {"age_minutes": round(age_minutes, 2)},
-        )
-
-    bridge_status = await manager.get_status()
-    if bridge_status.get("connected_bridges", 0) <= 0:
-        raise HTTPException(
-            status_code=503,
-            detail="Bridge offline; trade not dispatched",
-        )
-
-    ai_approved, ai_score, ai_reason = await ai_validate_signal(signal)
-    if not ai_approved:
-        return _reject_signal(
-            signal,
-            db,
-            "AI",
-            ai_reason or "Rejected by AI",
-            {"ai_score": ai_score},
         )
 
     balance = account_balance or CONFIG.demo_balance
@@ -118,46 +165,46 @@ async def approve_signal_by_id(
     signal.status = SignalStatus.APPROVED.value
     db.commit()
 
-    trade_payload = {
-        "type": "new_trade",
-        "action": signal.action,
-        "symbol": signal.symbol,
-        "entry": signal.entry_price,
-        "sl": signal.sl,
-        "tp": signal.tp,
-        "tp2": signal.tp2,
-        "tp3": signal.tp3,
-        "lot": signal.lot_size,
-        "signal_id": signal.id,
-        "timestamp": datetime.utcnow().isoformat(),
-    }
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-    try:
-        dispatch_result = await manager.broadcast_trade(trade_payload)
-    except Exception as exc:
-        logger.error("Broadcast failed for signal %s: %s", signal.id, exc)
+    # Attempt broker dispatch
+    broker_result = await _dispatch_via_broker(signal)
+
+    if broker_result is not None and "error" not in broker_result:
+        # Broker executed successfully → mark as executed, log trade
+        fill_price = broker_result.get("fill_price") or signal.entry_price
+        signal.executed_at = now
+        signal.execution_result = f"broker:{broker_result['broker']} order:{broker_result.get('order_id','?')}"
+        signal.status = SignalStatus.EXECUTED.value
+        _create_trade_log(signal, db, broker_result)
+        db.commit()
+
+        return {
+            "status": "executed",
+            "signal_id": signal.id,
+            "lot_size": lot,
+            "broker": broker_result,
+            "fill_price": fill_price,
+        }
+    elif broker_result is not None and "error" in broker_result:
+        # Broker rejected → rollback approval state
+        logger.warning(
+            "Broker dispatch failed for signal %s: %s; rolling back",
+            signal.id, broker_result["error"],
+        )
         _reset_dispatch_state(signal)
         db.commit()
         raise HTTPException(
             status_code=503,
-            detail="Bridge dispatch failed; signal left pending",
-        ) from exc
-
-    if dispatch_result.get("sent_count", 0) <= 0:
-        logger.warning("No bridge received signal %s; rolling back approval", signal.id)
-        _reset_dispatch_state(signal)
-        db.commit()
-        raise HTTPException(
-            status_code=503,
-            detail="Bridge dispatch failed; signal left pending",
+            detail=f"Broker dispatch failed: {broker_result['error']}",
         )
 
+    # No active broker → leave approved, will dispatch when broker connects
+    logger.info("Signal %s approved — no broker connected, waiting", signal.id)
     return {
         "status": "approved",
         "signal_id": signal.id,
         "lot_size": lot,
-        "ai_score": ai_score,
-        "dispatch": dispatch_result,
     }
 
 

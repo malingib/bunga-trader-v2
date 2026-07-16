@@ -1,7 +1,7 @@
 """Symbol helpers for multi-instrument signal normalisation.
 
-Supports GOLD (XAUUSD), EURUSD, GBPUSD with canonical names
-and MT5 broker symbol candidates per instrument.
+Supports XAUUSD, SP500, NAS100 (and EURUSD/GBPUSD).
+Yahoo Finance ticker mapping for live data fetching.
 """
 
 from __future__ import annotations
@@ -12,6 +12,11 @@ from typing import Dict, List
 SUPPORTED_SYMBOLS: Dict[str, str] = {
     "GOLD": "XAUUSD",
     "XAUUSD": "XAUUSD",
+    "SP500": "SP500",
+    "SPX": "SP500",
+    "NAS100": "NAS100",
+    "US100": "NAS100",
+    "USOIL": "USOIL",
     "EURUSD": "EURUSD",
     "GBPUSD": "GBPUSD",
 }
@@ -20,6 +25,11 @@ SUPPORTED_SYMBOLS: Dict[str, str] = {
 ALIASES: Dict[str, str] = {
     "GOLD": "XAUUSD",
     "XAUUSD": "XAUUSD",
+    "SP500": "SP500",
+    "SPX": "SP500",
+    "NAS100": "NAS100",
+    "US100": "NAS100",
+    "USOIL": "USOIL",
     "EURUSD": "EURUSD",
     "GBPUSD": "GBPUSD",
     "EUR/USD": "EURUSD",
@@ -27,21 +37,22 @@ ALIASES: Dict[str, str] = {
     "XAU/USD": "XAUUSD",
 }
 
-# MT5 symbol candidates per canonical symbol (ordered by preference)
-MT5_CANDIDATES: Dict[str, List[str]] = {
-    "XAUUSD": ["XAUUSD", "GOLD", "XAUUSDm", "GOLDm", "XAUUSD.", "GOLD."],
-    "EURUSD": ["EURUSD", "EURUSDm", "EURUSD.", "EUR/USD"],
-    "GBPUSD": ["GBPUSD", "GBPUSDm", "GBPUSD.", "GBP/USD"],
+# Yahoo Finance ticker symbols per canonical symbol
+YAHOO_TICKERS: Dict[str, str] = {
+    "XAUUSD": "GC=F",
+    "SP500": "ES=F",
+    "NAS100": "NQ=F",
+    "USOIL": "CL=F",
+    "EURUSD": "EURUSD=X",
+    "GBPUSD": "GBPUSD=X",
 }
 
 
 def normalize_signal_symbol(symbol: str) -> str:
     """Normalise signal symbols to canonical broker-friendly values."""
     cleaned = (symbol or "").strip().upper()
-    # Direct match
     if cleaned in ALIASES:
         return ALIASES[cleaned]
-    # Try alias mapping
     return cleaned
 
 
@@ -51,12 +62,10 @@ def is_supported_symbol(symbol: str) -> bool:
     return normalized in SUPPORTED_SYMBOLS.values()
 
 
-def mt5_candidates(symbol: str) -> List[str]:
-    """Return MT5 symbol candidates for a symbol, ordered by preference."""
+def yahoo_ticker(symbol: str) -> str:
+    """Return Yahoo Finance ticker for a canonical symbol."""
     normalized = normalize_signal_symbol(symbol)
-    if normalized in MT5_CANDIDATES:
-        return MT5_CANDIDATES[normalized]
-    return [normalized]
+    return YAHOO_TICKERS.get(normalized, normalized)
 
 
 def get_all_supported_symbols() -> List[str]:

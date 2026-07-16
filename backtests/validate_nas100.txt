@@ -1,0 +1,35 @@
+======================================================================
+VALIDATE — Momentum Breakout Strategy (NAS100 1-min)
+======================================================================
+  Data: 22987 candles ($30075.25 → $29505.75, -1.89%)
+  Method: 2-bar breakout + bullish/bearish bar confirmation
+  Exit: ATR(14)-based SL/TP + 15-bar time exit
+  Sizing: Fixed 1.0 units
+
+Config                       Return  Win% Trades      DD
+------------------------------------------------------------
+  SL=1.2 RR=3.0             -22.04%  32.8  2530 122.5%
+  SL=1.2 RR=2.0            +154.96%  37.1  2954  75.1%
+  SL=1.5 RR=2.0            +189.60%  40.2  2368  73.0%
+  SL=1.5 RR=3.0            +104.86%  37.8  2135 174.7%
+  SL=1.0 RR=2.0             +54.04%  35.3  3597  99.0%
+  SL=1.0 RR=3.0            +111.59%  31.0  2934 101.4%
+
+────────────────────────────────────────────────────────────
+WALK-FORWARD (4 quarters, SL=1.2 RR=3.0, fixed 1.0 unit):
+  Q1: Return= -112.24% Trades= 624 Win%= 29.5 DD=111.9%
+  Q2: Return=  +63.65% Trades= 633 Win%= 37.3 DD= 45.2%
+  Q3: Return=  +36.53% Trades= 627 Win%= 33.8 DD= 52.4%
+  Q4: Return=  -11.12% Trades= 643 Win%= 30.8 DD= 68.8%
+  ──────────────────────────────────────
+  Full: +-22.04% DD=122.5% Trades=2530
+  Quarters: 2/4 negative | Avg quarterly: -5.79%
+  Min equity: $-231.63 (123.2% max dd)
+
+======================================================================
+BELOW TARGET
+  Best config (SL=1.2×, RR=3.0×): -22.04% on NAS100 1-min
+  Walk-forward: 2/4 positive quarters
+  Average quarterly: -5.79%
+  <5% target NOT MET
+======================================================================

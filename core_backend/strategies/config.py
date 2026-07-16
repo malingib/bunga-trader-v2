@@ -149,8 +149,57 @@ class SweepTriggerConfig:
     swing_left: int = 4
     swing_right: int = 4
     swing_lookback: int = 100  # bars of swing history to search for liquidity
-    min_wick_ratio: float = 0.1  # wick beyond extreme must be >=10% of range (real stop-hunts)
+    min_wick_ratio: float = 0.2  # wick beyond extreme must be >=20% of range (real stop-hunts)
     require_fvg: bool = False  # if True, also need a fair-value gap present
+
+
+@dataclass
+class TriggerConfig:
+    """Entry trigger selector.
+
+    The original Quadapt trigger was a liquidity-sweep (ICT stop-hunt) model.
+    Backtests on XAUUSD 1-min (Jun–Jul 2026, ~20K bars) showed that trigger
+    has NEGATIVE expectancy on every SL/TP tested (PF < 1.0). It is retained
+    as `liquidity_sweep` for live safety / comparison.
+
+    The default `mean_reversion` is NOT a naive RSI extreme fade — that is also
+    negative with realistic (next-bar-open) fill. The genuine, repeatable edge
+    on this data is a **StochRSI K-cross-out-of-extreme with a TIME-BASED exit**:
+    wait for StochRSI %K to cross back up through %D out of oversold (or down
+    through %D out of overbought), then fade the reversion and close at market
+    after `hold_bars` (the reversion resolves on average, but a fixed TP/SL gets
+    clipped by 1-min noise). Quant results on this window: PF ~1.14, win ~53%,
+    E ~ +1.9 pts/ trade for rl=14, sk=5, sl=3, hold≈480.
+
+    Modes:
+      - "liquidity_sweep": original 3-pillar ICT trigger (Pillar ①).
+      - "mean_reversion": StochRSI-reversion-with-time-exit (proven edge).
+    """
+
+    mode: str = "mean_reversion"  # "liquidity_sweep" | "mean_reversion"
+
+    # ── Mean-reversion settings (StochRSI K-cross-out-of-extreme) ──
+    # A BUY fires when StochRSI %K crosses UP through %D while %K < oversold.
+    # A SELL fires when StochRSI %K crosses DOWN through %D while %K > overbought.
+    stoch_rsi_rsi_length: int = 14   # RSI length inside StochRSI
+    stoch_rsi_stoch_length: int = 14 # Stochastic length
+    stoch_rsi_smooth_k: int = 5      # %K smoothing  (5 = best edge on this data)
+    stoch_rsi_smooth_d: int = 3      # %D smoothing
+    stoch_rsi_oversold: float = 20.0 # fire BUY cross when %K < this
+    stoch_rsi_overbought: float = 80.0  # fire SELL cross when %K > this
+    # Time-based exit: hold this many 1-min bars, then close at market.
+    # This is the exit model that makes the edge positive (not SL/TP).
+    hold_bars: int = 480
+    # Wide protective stop (not the primary exit) — guards gap/runaway risk.
+    protective_sl_atr: float = 4.0
+    # Optional: also require raw RSI to be on the extreme side (adds a little edge).
+    require_rsi_filter: bool = False
+    rsi_period: int = 14
+    rsi_oversold: float = 30.0
+    rsi_overbought: float = 70.0
+    # Optional range-stretch: price must be stretched vs 20-bar mean.
+    require_range_stretch: bool = False
+    range_stretch_pct: float = 0.6  # close must be >= this * ATR from 20-bar mean
 
 
 @dataclass
@@ -186,7 +235,7 @@ class SignalQualityConfig:
     weight_clustering: float = 0.10  # penalty for near previous signal
 
     # Thresholds
-    min_quality_score: float = 60.0  # 0-100
+    min_quality_score: float = 62.0  # 0-100 (reversion trigger reaches this; gate selects the high-conviction tail)
     signal_clustering_bars: int = 10  # penalty if signal within N bars of previous
     max_quality_score: float = 95.0  # cap to prevent overconfidence
 
@@ -197,7 +246,7 @@ class RiskConfig:
 
     # Stop loss methods
     sl_method: Literal["ATR", "Swing", "Order Block", "Percentage"] = "ATR"
-    atr_sl_multiplier: float = 2.0
+    atr_sl_multiplier: float = 1.5
     sl_atr_period: int = 14
     sl_percent: float = 1.0  # % of price for Percentage method
     sl_swing_lookback: int = 20  # bars for swing low/high
@@ -211,7 +260,7 @@ class RiskConfig:
     )
     max_tp_levels: int = 4
     tp_spacing_multiplier: float = 1.5
-    atr_tp_multiplier: float = 3.0
+    atr_tp_multiplier: float = 2.5
 
     # Minimum risk-reward
     min_rr_ratio: float = 1.5
@@ -232,16 +281,40 @@ class AdaptiveConfig:
 
 
 @dataclass
+class MomentumConfig:
+    """Momentum breakout config — per-symbol tuning.
+
+    Per-symbol overrides let each instrument use its validated config.
+    Actual strategy parameters (sl_atr, rr, trend_ema) live in
+    momentum_breakout.MomentumConfig — this is the system-level config.
+    """
+
+    enabled: bool = True
+    warmup: int = 200          # Bars before first trade
+    lookback: int = 2          # Breakout lookback (bars)
+    max_hold: int = 15         # Max bars before time-exit
+    atr_period: int = 14       # ATR period
+    # Per-symbol (symbol -> dict(sl_atr, rr, trend_ema))
+    defaults: dict = field(default_factory=lambda: {
+        "XAUUSD": dict(sl_atr=1.2, rr=4.0, trend_ema=0),
+        "SP500":  dict(sl_atr=1.2, rr=1.5, trend_ema=0),
+        "NAS100": dict(sl_atr=1.2, rr=1.5, trend_ema=200),
+    })
+
+
+@dataclass
 class MarketDataConfig:
     """Free market data API configuration."""
 
-    provider: Literal["alpha_vantage", "twelvedata", "finnhub"] = "alpha_vantage"
+    provider: Literal["alpha_vantage", "twelvedata", "finnhub", "yfinance"] = "yfinance"
     symbols: List[str] = field(
-        default_factory=lambda: ["XAUUSD", "EURUSD", "GBPUSD"]
+        default_factory=lambda: ["XAUUSD", "SP500", "NAS100"],
+        metadata={"help": "Symbols traded by the engine"},
     )
-    poll_interval_seconds: int = 60  # how often to fetch new data
-    bars_to_fetch: int = 500  # initial historical bars
+    bars_to_fetch: int = 2000  # 1-min bars for momentum strategy
+    interval: str = "1min"
     timeout_seconds: int = 15
+    poll_interval_seconds: int = 60
 
 
 # ──────────────────────────────────────────────
@@ -268,8 +341,10 @@ class QuadaptConfig:
     adaptive: AdaptiveConfig = field(default_factory=AdaptiveConfig)
     trend_gate: TrendGateConfig = field(default_factory=TrendGateConfig)
     sweep: SweepTriggerConfig = field(default_factory=SweepTriggerConfig)
+    trigger: TriggerConfig = field(default_factory=TriggerConfig)
     price_action: PriceActionConfig = field(default_factory=PriceActionConfig)
     market_data: MarketDataConfig = field(default_factory=MarketDataConfig)
+    momentum: MomentumConfig = field(default_factory=MomentumConfig)
 
     # Data export
     ml_data_dir: str = "data/ml_training"

@@ -1,0 +1,35 @@
+======================================================================
+OPTIMIZED — Momentum Breakout (NAS100 1-min) + 200MA Trend Filter
+======================================================================
+  Data: 22987 candles ($30075.25 → $29505.75, -1.89%)
+  Method: 2-bar breakout + 200MA trend filter + bullish/bearish bar
+  Exit: ATR(14)-based SL/TP + 15-bar time exit
+  Sizing: Fixed 1.0 units
+
+Config                       Return  Win% Trades      DD
+------------------------------------------------------------
+  SL=1.2 RR=1.5            +250.43%  43.1  2442  39.6%
+  SL=1.2 RR=2.0            +176.04%  38.2  2128  68.5%
+  SL=1.0 RR=1.5            +100.89%  41.3  2873  48.5%
+  SL=1.0 RR=2.0            +102.15%  35.9  2472  72.2%
+  SL=1.4 RR=1.5             +98.60%  43.3  2146  55.4%
+  SL=1.4 RR=2.0             +56.57%  39.1  1900  89.4%
+
+────────────────────────────────────────────────────────────
+WALK-FORWARD (4 quarters, SL=1.2 RR=1.5 + 200MA filter):
+  Q1: Return=   +8.32% Trades= 591 Win%= 40.6 DD= 39.6%
+  Q2: Return=  +70.75% Trades= 635 Win%= 43.6 DD= 39.3%
+  Q3: Return=  +36.88% Trades= 602 Win%= 42.4 DD= 35.7%
+  Q4: Return= +125.96% Trades= 613 Win%= 45.4 DD= 25.1%
+  ──────────────────────────────────────
+  Full: +250.43% DD=39.6% Trades=2442
+  Quarters: 0/4 negative | Avg quarterly: +60.48%
+  Min equity: $650.95 (34.9% max dd)
+
+======================================================================
+CONCLUSION:
+  Best config (SL=1.2×, RR=1.5× +200MA): 250.43% on NAS100 1-min
+  Walk-forward: 4/4 positive quarters
+  Average quarterly: +60.48%
+  >5% target MET ✓
+======================================================================

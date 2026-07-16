@@ -54,7 +54,6 @@ class TestLotCalculation:
 
 def _signal(**kwargs) -> ParsedSignal:
     defaults = {
-        "raw_signal_id": 1,
         "action": "BUY",
         "symbol": "EURUSD",
         "raw_text": "test",

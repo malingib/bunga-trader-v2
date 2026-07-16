@@ -25,7 +25,7 @@ def get_instrument_type(symbol: str) -> str:
         return "SILVER"
     elif symbol_upper in ("BTCUSD", "ETHUSD", "LTCUSD", "XRPUSD"):
         return "CRYPTO"
-    elif any(idx in symbol_upper for idx in ("US30", "US100", "US500", "DE40", "UK100", "JP225")):
+    elif symbol_upper in ("SP500", "NAS100", "US30", "US100", "US500", "DE40", "UK100", "JP225"):
         return "INDICES"
     elif "JPY" in symbol_upper:
         return "JPY"
@@ -46,7 +46,7 @@ def get_pip_value_per_lot(symbol: str, current_price: Optional[float] = None) ->
     elif inst_type == "CRYPTO":
         return 1.0
     elif inst_type == "INDICES":
-        return 1.0
+        return 50.0
     elif inst_type == "JPY":
         if current_price and current_price > 0:
             return (0.01 / current_price) * 100_000

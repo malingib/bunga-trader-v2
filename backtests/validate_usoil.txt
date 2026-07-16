@@ -1,0 +1,35 @@
+======================================================================
+VALIDATE — Momentum Breakout Strategy (USOIL 1-min)
+======================================================================
+  Data: 22825 candles ($80.85 → $74.28, -8.13%)
+  Method: 2-bar breakout + bullish/bearish bar confirmation
+  Exit: ATR(14)-based SL/TP + 15-bar time exit
+  Sizing: Fixed 1.0 units
+
+Config                       Return  Win% Trades      DD
+------------------------------------------------------------
+  SL=1.2 RR=3.0              -0.24%  30.8  2619   1.1%
+  SL=1.2 RR=2.0              -1.50%  33.4  3066   1.7%
+  SL=1.5 RR=2.0              -1.58%  34.9  2545   2.1%
+  SL=1.5 RR=3.0              -0.58%  33.6  2265   2.0%
+  SL=1.0 RR=2.0              -0.93%  33.1  3569   1.2%
+  SL=1.0 RR=3.0              -0.48%  27.7  3039   1.1%
+
+────────────────────────────────────────────────────────────
+WALK-FORWARD (4 quarters, SL=1.2 RR=3.0, fixed 1.0 unit):
+  Q1: Return=   -0.03% Trades= 666 Win%= 30.6 DD=  0.5%
+  Q2: Return=   +0.46% Trades= 642 Win%= 34.1 DD=  0.4%
+  Q3: Return=   -0.38% Trades= 661 Win%= 29.5 DD=  0.5%
+  Q4: Return=   -0.30% Trades= 648 Win%= 28.5 DD=  0.6%
+  ──────────────────────────────────────
+  Full: +-0.24% DD=1.1% Trades=2619
+  Quarters: 3/4 negative | Avg quarterly: -0.06%
+  Min equity: $994.84 (0.5% max dd)
+
+======================================================================
+BELOW TARGET
+  Best config (SL=1.2×, RR=3.0×): -0.24% on USOIL 1-min
+  Walk-forward: 1/4 positive quarters
+  Average quarterly: -0.06%
+  <5% target NOT MET
+======================================================================

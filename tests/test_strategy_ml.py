@@ -1,7 +1,7 @@
 """Tests for flat-file ML data storage/strategy pipeline integration."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -28,7 +28,7 @@ class TestMLDataLogger:
             quality_score=78.5,
             signal_source="Quadapt_ML_Trader",
             confidence="high",
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
 
         logger.log_signal(signal, {"atr": 0.005, "regime": "trending"})
@@ -59,7 +59,7 @@ class TestMLDataLogger:
         )
 
         logger = MLDataLogger()
-        ts = datetime.utcnow()
+        ts = datetime.now(timezone.utc).replace(tzinfo=None)
 
         logger.update_outcome("EURUSD", ts, "win", pnl=12.5)
 

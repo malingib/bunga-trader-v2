@@ -28,17 +28,18 @@ def _make_candle(close: float, open_: float | None = None) -> MagicMock:
     c.high = float(close) * 1.001
     c.low = float(close) * 0.999
     c.volume = 100.0
-    c.time = datetime.utcnow()
+    c.time = datetime.now(timezone.utc).replace(tzinfo=None)
     return c
 
 
 def _snapshot(symbol: str, closes, highs, lows):
     from core_backend.strategies.market_data import Candle, MarketSnapshot
+    from datetime import timezone
 
     candles = []
     for i in range(len(closes)):
         c = Candle(
-            time=datetime.utcnow(),
+            time=datetime.now(timezone.utc).replace(tzinfo=None),
             open=float(highs[i] + lows[i]) / 2.0,
             high=float(highs[i]),
             low=float(lows[i]),
@@ -47,7 +48,7 @@ def _snapshot(symbol: str, closes, highs, lows):
         )
         candles.append(c)
 
-    return MarketSnapshot(symbol=symbol, candles=candles, fetched_at=datetime.utcnow())
+    return MarketSnapshot(symbol=symbol, candles=candles, fetched_at=datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 # ──────────────────────────────────────────────
@@ -138,7 +139,7 @@ class TestEnginePipeline:
         engine = QuadaptEngine()
         engine.cfg.market_data.poll_interval_seconds = 60
         with patch(
-            "core_backend.strategies.market_data.fetch_market_data",
+            "core_backend.strategies.engine.fetch_market_data",
             side_effect=RuntimeError("rate limit hit"),
         ):
             signals = engine.run_poll()

@@ -6,7 +6,7 @@ sweep-as-trigger behavior — independent of the live compounding loop.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from math import isnan
 
 import pytest
@@ -50,7 +50,7 @@ def _candles_from_ohlc(rows):
 
 def _snapshot_from_ohlc(symbol, rows):
     return MarketSnapshot(symbol=symbol, candles=_candles_from_ohlc(rows),
-                          fetched_at=datetime.utcnow())
+                          fetched_at=datetime.now(timezone.utc).replace(tzinfo=None))
 
 
 # ──────────────────────────────────────────────

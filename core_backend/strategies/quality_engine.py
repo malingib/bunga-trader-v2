@@ -51,6 +51,7 @@ class SignalQualityEngine:
         pa_structure: Optional[MarketStructure] = None,
         has_fvg: bool = False,
         rel_volume: Optional[float] = None,
+        reversion_signal: bool = False,
     ) -> float:
         """Compute quality score 0-100 for a potential signal.
 
@@ -116,6 +117,8 @@ class SignalQualityEngine:
         total_weight += weights.weight_envelope
 
         # ── 7. Liquidity sweep (pillar ①) — primary edge ──
+        # For mean-reversion triggers, the same pillar-① weight is credited
+        # (the extreme-RSI fade IS the primary edge on this data).
         sweep_score = 0.0
         if sweep is not None:
             # Base: a valid sweep-with-rejection is high conviction.
@@ -125,6 +128,8 @@ class SignalQualityEngine:
                 sweep_score = 1.0
             elif sweep.wick_ratio >= 0.3:
                 sweep_score = 0.85
+        elif reversion_signal:
+            sweep_score = 0.85  # mean-reversion extreme: solid conviction
         score += sweep_score * 100.0 * weights.weight_liquidity_sweep
         total_weight += weights.weight_liquidity_sweep
 
