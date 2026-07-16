@@ -2,21 +2,20 @@
 
 Supports XAUUSD, SP500, NAS100 (and EURUSD/GBPUSD).
 Yahoo Finance ticker mapping for live data fetching.
+
+USOIL was dropped: backtests on its 1-min window showed no edge
+(best config +0.65%, target >5% NOT MET). See backtests/explore_params_results.txt.
 """
 
 from __future__ import annotations
-
 from typing import Dict, List
 
-# Supported instruments
+# Supported instruments (canonical broker-friendly symbols)
 SUPPORTED_SYMBOLS: Dict[str, str] = {
     "GOLD": "XAUUSD",
     "XAUUSD": "XAUUSD",
     "SP500": "SP500",
-    "SPX": "SP500",
     "NAS100": "NAS100",
-    "US100": "NAS100",
-    "USOIL": "USOIL",
     "EURUSD": "EURUSD",
     "GBPUSD": "GBPUSD",
 }
@@ -29,7 +28,6 @@ ALIASES: Dict[str, str] = {
     "SPX": "SP500",
     "NAS100": "NAS100",
     "US100": "NAS100",
-    "USOIL": "USOIL",
     "EURUSD": "EURUSD",
     "GBPUSD": "GBPUSD",
     "EUR/USD": "EURUSD",
@@ -42,7 +40,6 @@ YAHOO_TICKERS: Dict[str, str] = {
     "XAUUSD": "GC=F",
     "SP500": "ES=F",
     "NAS100": "NQ=F",
-    "USOIL": "CL=F",
     "EURUSD": "EURUSD=X",
     "GBPUSD": "GBPUSD=X",
 }

@@ -30,6 +30,10 @@ def _signal_to_db(signal: StrategySignal) -> int:
 
     Returns the parsed_signal.id.
     """
+    # Use the engine's generated_at as the ML reconciliation key so a later
+    # trade-close can backfill the outcome onto the matching ML record
+    # (MLDataLogger.update_outcome matches on (symbol, entry_time)).
+    gen_at = signal.generated_at
     ps = ParsedSignal(
         action=signal.action,
         symbol=signal.symbol,
@@ -43,11 +47,12 @@ def _signal_to_db(signal: StrategySignal) -> int:
             f"@{signal.entry_price} | SL: {signal.sl} TP: {signal.tp} "
             f"| Score: {signal.quality_score}"
         ),
-        parsed_at=datetime.now(timezone.utc).replace(tzinfo=None),
+        parsed_at=gen_at,
         status=SignalStatus.PENDING.value,
         ai_score=signal.quality_score / 100.0,
         lot_size=0.0,
         risk_percent=CONFIG.default_risk_percent,
+        strategy_generated_at=gen_at.isoformat(),
     )
 
     with get_db() as db:
@@ -150,23 +155,45 @@ async def _dispatch_signal(signal_id: int) -> None:
                 signal.status = SignalStatus.EXECUTED.value
                 signal.executed_at = datetime.now(timezone.utc).replace(tzinfo=None)
                 signal.execution_result = f"broker:{broker.name} order:{result.order_id}"
+                fill = result.fill_price or signal.entry_price
+                # ── Real P&L (in account currency) ──
+                # pip_size: gold 0.01, indices 1.0 (matches risk_engine)
+                from ..risk_engine import get_pip_value_per_lot, get_pip_size
+                pip_size = get_pip_size(signal.symbol)
+                pip_val = get_pip_value_per_lot(signal.symbol, fill)
+                lot = signal.lot_size or 0.0
+                points = abs(fill - signal.entry_price) / pip_size
+                pnl = points * pip_val * lot
+                if signal.action in ("SELL", "SELL_LIMIT", "SELL_STOP"):
+                    pnl = -pnl
+                outcome = "win" if pnl > 0 else "loss"
                 from ..models import TradeLog
                 trade = TradeLog(
                     parsed_signal_id=signal.id,
                     symbol=signal.symbol,
                     action=signal.action,
-                    lot_size=signal.lot_size or 0.0,
-                    entry_price=result.fill_price or signal.entry_price,
+                    lot_size=lot,
+                    entry_price=fill,
                     sl=signal.sl,
                     tp=signal.tp,
                     result="executed",
+                    pnl=pnl,
                     executed_at=signal.executed_at,
                 )
                 db.add(trade)
                 db.commit()
+                # ── Backfill ML training outcome (closes the labelling loop) ──
+                if signal.strategy_generated_at:
+                    from datetime import datetime as _dt
+                    try:
+                        _gen = _dt.fromisoformat(signal.strategy_generated_at)
+                        from ..strategies.engine import log_trade_outcome
+                        log_trade_outcome(signal.symbol, _gen, outcome, float(pnl))
+                    except Exception as e:
+                        logger.error(f"ML outcome backfill failed for {signal.id}: {e}")
                 logger.info(
                     f"Signal {signal_id} EXECUTED via {broker.name}: "
-                    f"order={result.order_id} fill={result.fill_price}"
+                    f"order={result.order_id} fill={result.fill_price} pnl={pnl:.2f} ({outcome})"
                 )
             else:
                 logger.warning(

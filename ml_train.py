@@ -65,19 +65,17 @@ def load_data() -> tuple[list[list[float]], list[int]]:
             if outcome is None:
                 continue
 
-            feats = rec.get("features", {})
-            if not feats:
-                continue
-
-            # Extract numeric features
+            # Features live under `features`; quality_score is at TOP LEVEL.
+            feats = rec.get("features", {}) or {}
+            # Skip rows with missing critical features
             atr_val = feats.get("atr")
-            regime_str = feats.get("regime", "unknown")
             mtf_val = feats.get("mtf_alignment")
             st_val = feats.get("supertrend_dir")
             stoch_val = feats.get("stoch_rsi_k")
-            qs_val = rec.get("quality_score")
+            qs_val = rec.get("quality_score") or feats.get("quality_score")
+            # clsuter/regime are optional-ish but needed for the model
+            regime_str = feats.get("regime", "unknown")
 
-            # Skip rows with missing critical features
             if any(v is None for v in [atr_val, mtf_val, st_val, stoch_val, qs_val]):
                 continue
 

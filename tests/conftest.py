@@ -1,6 +1,13 @@
 """Pytest configuration: env vars and temp SQLite for risk-engine DB checks."""
 import os
+import sys
 from contextlib import contextmanager
+from pathlib import Path
+
+# Make backtests/ importable (shared backtest engine lives there).
+sys_path = str(Path(__file__).resolve().parent.parent / "backtests")
+if sys_path not in sys.path:
+    sys.path.insert(0, sys_path)
 
 # Set required env before any core_backend import (config loads at import time).
 os.environ.setdefault("TG_API_ID", "1")

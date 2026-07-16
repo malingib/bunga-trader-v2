@@ -1,0 +1,10 @@
+19:08:15 | INFO     | RiskEngine           | Lot for NAS100: balance=$1000.00, risk=1.0%, SL=3.4pips, pip_val=$50.00, lot=0.06
+19:08:25 | INFO     | RiskEngine           | Lot for SP500: balance=$1000.00, risk=1.0%, SL=1.6pips, pip_val=$50.00, lot=0.12
+[1/27] sl=1.0 pt=0.3 hb= 30 | avg_ret=  -0.44% trades=   4 win=  0.0% maxDD=  1.0% killed=False
+19:08:54 | INFO     | RiskEngine           | Lot for NAS100: balance=$1000.00, risk=1.0%, SL=3.4pips, pip_val=$50.00, lot=0.06
+19:09:04 | INFO     | RiskEngine           | Lot for SP500: balance=$1000.00, risk=1.0%, SL=1.6pips, pip_val=$50.00, lot=0.12
+[2/27] sl=1.0 pt=0.3 hb= 60 | avg_ret=  -0.44% trades=   4 win=  0.0% maxDD=  1.0% killed=False
+19:09:32 | INFO     | RiskEngine           | Lot for NAS100: balance=$1000.00, risk=1.0%, SL=3.4pips, pip_val=$50.00, lot=0.06
+19:09:42 | INFO     | RiskEngine           | Lot for SP500: balance=$1000.00, risk=1.0%, SL=1.6pips, pip_val=$50.00, lot=0.12
+[3/27] sl=1.0 pt=0.3 hb=120 | avg_ret=  -0.44% trades=   4 win=  0.0% maxDD=  1.0% killed=False
+19:10:10 | INFO     | RiskEngine           | Lot for NAS100: balance=$1000.00, risk=1.0%, SL=3.4pips, pip_val=$50.00, lot=0.06

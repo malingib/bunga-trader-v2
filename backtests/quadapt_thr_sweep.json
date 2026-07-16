@@ -1,0 +1,227 @@
+[
+  {
+    "thr": 50,
+    "avg_ret": -32.64333333333333,
+    "trades": 1445,
+    "win": 7.8,
+    "dd": 40.6,
+    "detail": {
+      "NAS100": {
+        "symbol": "NAS100",
+        "mode": "mean_reversion",
+        "ret_pct": -40.56,
+        "trades": 338,
+        "signals": 84,
+        "win_pct": 4.7,
+        "max_dd_pct": 40.6,
+        "final_equity": 594.39,
+        "min_equity": 594.39,
+        "killed": true
+      },
+      "SP500": {
+        "symbol": "SP500",
+        "mode": "mean_reversion",
+        "ret_pct": -40.23,
+        "trades": 512,
+        "signals": 122,
+        "win_pct": 4.3,
+        "max_dd_pct": 40.2,
+        "final_equity": 597.66,
+        "min_equity": 597.66,
+        "killed": true
+      },
+      "XAUUSD": {
+        "symbol": "XAUUSD",
+        "mode": "mean_reversion",
+        "ret_pct": -17.14,
+        "trades": 595,
+        "signals": 176,
+        "win_pct": 12.6,
+        "max_dd_pct": 40.2,
+        "final_equity": 828.55,
+        "min_equity": 828.55,
+        "killed": true
+      }
+    }
+  },
+  {
+    "thr": 40,
+    "avg_ret": -40.26,
+    "trades": 1626,
+    "win": 7.2,
+    "dd": 40.6,
+    "detail": {
+      "NAS100": {
+        "symbol": "NAS100",
+        "mode": "mean_reversion",
+        "ret_pct": -40.55,
+        "trades": 334,
+        "signals": 86,
+        "win_pct": 4.8,
+        "max_dd_pct": 40.6,
+        "final_equity": 594.53,
+        "min_equity": 594.53,
+        "killed": true
+      },
+      "SP500": {
+        "symbol": "SP500",
+        "mode": "mean_reversion",
+        "ret_pct": -40.23,
+        "trades": 526,
+        "signals": 124,
+        "win_pct": 4.6,
+        "max_dd_pct": 40.2,
+        "final_equity": 597.75,
+        "min_equity": 597.75,
+        "killed": true
+      },
+      "XAUUSD": {
+        "symbol": "XAUUSD",
+        "mode": "mean_reversion",
+        "ret_pct": -40.0,
+        "trades": 766,
+        "signals": 231,
+        "win_pct": 10.1,
+        "max_dd_pct": 40.4,
+        "final_equity": 600.0,
+        "min_equity": 600.0,
+        "killed": true
+      }
+    }
+  },
+  {
+    "thr": 42,
+    "avg_ret": -40.26,
+    "trades": 1626,
+    "win": 7.2,
+    "dd": 40.6,
+    "detail": {
+      "NAS100": {
+        "symbol": "NAS100",
+        "mode": "mean_reversion",
+        "ret_pct": -40.55,
+        "trades": 334,
+        "signals": 86,
+        "win_pct": 4.8,
+        "max_dd_pct": 40.6,
+        "final_equity": 594.53,
+        "min_equity": 594.53,
+        "killed": true
+      },
+      "SP500": {
+        "symbol": "SP500",
+        "mode": "mean_reversion",
+        "ret_pct": -40.23,
+        "trades": 526,
+        "signals": 124,
+        "win_pct": 4.6,
+        "max_dd_pct": 40.2,
+        "final_equity": 597.75,
+        "min_equity": 597.75,
+        "killed": true
+      },
+      "XAUUSD": {
+        "symbol": "XAUUSD",
+        "mode": "mean_reversion",
+        "ret_pct": -40.0,
+        "trades": 766,
+        "signals": 231,
+        "win_pct": 10.1,
+        "max_dd_pct": 40.4,
+        "final_equity": 600.0,
+        "min_equity": 600.0,
+        "killed": true
+      }
+    }
+  },
+  {
+    "thr": 45,
+    "avg_ret": -40.31666666666667,
+    "trades": 1606,
+    "win": 7.1,
+    "dd": 40.6,
+    "detail": {
+      "NAS100": {
+        "symbol": "NAS100",
+        "mode": "mean_reversion",
+        "ret_pct": -40.55,
+        "trades": 334,
+        "signals": 86,
+        "win_pct": 4.8,
+        "max_dd_pct": 40.6,
+        "final_equity": 594.53,
+        "min_equity": 594.53,
+        "killed": true
+      },
+      "SP500": {
+        "symbol": "SP500",
+        "mode": "mean_reversion",
+        "ret_pct": -40.48,
+        "trades": 513,
+        "signals": 120,
+        "win_pct": 4.3,
+        "max_dd_pct": 40.5,
+        "final_equity": 595.17,
+        "min_equity": 595.17,
+        "killed": true
+      },
+      "XAUUSD": {
+        "symbol": "XAUUSD",
+        "mode": "mean_reversion",
+        "ret_pct": -39.92,
+        "trades": 759,
+        "signals": 228,
+        "win_pct": 9.9,
+        "max_dd_pct": 40.3,
+        "final_equity": 600.78,
+        "min_equity": 600.78,
+        "killed": true
+      }
+    }
+  },
+  {
+    "thr": 48,
+    "avg_ret": -40.31666666666667,
+    "trades": 1606,
+    "win": 7.1,
+    "dd": 40.6,
+    "detail": {
+      "NAS100": {
+        "symbol": "NAS100",
+        "mode": "mean_reversion",
+        "ret_pct": -40.55,
+        "trades": 334,
+        "signals": 86,
+        "win_pct": 4.8,
+        "max_dd_pct": 40.6,
+        "final_equity": 594.53,
+        "min_equity": 594.53,
+        "killed": true
+      },
+      "SP500": {
+        "symbol": "SP500",
+        "mode": "mean_reversion",
+        "ret_pct": -40.48,
+        "trades": 513,
+        "signals": 120,
+        "win_pct": 4.3,
+        "max_dd_pct": 40.5,
+        "final_equity": 595.17,
+        "min_equity": 595.17,
+        "killed": true
+      },
+      "XAUUSD": {
+        "symbol": "XAUUSD",
+        "mode": "mean_reversion",
+        "ret_pct": -39.92,
+        "trades": 759,
+        "signals": 228,
+        "win_pct": 9.9,
+        "max_dd_pct": 40.3,
+        "final_equity": 600.78,
+        "min_equity": 600.78,
+        "killed": true
+      }
+    }
+  }
+]

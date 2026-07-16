@@ -900,8 +900,22 @@ class QuadaptEngine:
                 self._last_signal[symbol] = (sig.generated_at, sig.entry_price)
 
                 # ML logging for self-learning pipeline
-                # TODO: enrich market_features for momentum path (ATR, volume, RSI, regime)
-                self.ml_logger.log_signal(sig, market_features={})
+                # Build the SAME feature schema the Quadapt path uses so
+                # ml_train.py can learn from both. quality_score goes at
+                # TOP LEVEL (ml_train reads it there), features hold the rest.
+                mom_feats = {
+                    "atr": sig.metadata.get("atr") if sig.metadata else None,
+                    "regime": "unknown",
+                    "mtf_alignment": 0.5,
+                    "supertrend_dir": None,
+                    "stoch_rsi_k": sig.metadata.get("atr"),  # placeholder until RSI added
+                    "squeeze": False,
+                    "squeeze_release": False,
+                }
+                _mom_record_feats = dict(mom_feats)
+                # Log with top-level quality_score (engine.log_signal puts
+                # quality_score at top level already; pass features only).
+                self.ml_logger.log_signal(sig, market_features=_mom_record_feats)
 
                 logger.info(
                     f"✨ [Momentum] {symbol} {sig.action} @ {sig.entry_price:.2f} "

@@ -1,0 +1,33 @@
+=== XAUUSD (GC=F) ===
+  XAUUSD: 2026-07-10->2026-07-16 -> 5489 rows
+  XAUUSD: 2026-07-04->2026-07-10 -> 5849 rows
+  XAUUSD: 2026-06-28->2026-07-04 -> 5854 rows
+  XAUUSD: 2026-06-22->2026-06-28 -> 6527 rows
+  XAUUSD: 2026-06-20->2026-06-22 -> 359 rows
+  XAUUSD: SAVED 24078 rows -> data/market_cache/fmp_XAUUSD_1min.csv
+=== SP500 (ES=F) ===
+  SP500: 2026-07-10->2026-07-16 -> 5460 rows
+$ES=F: possibly delisted; no price data found  (1m 2026-07-04 -> 2026-07-10)
+
+1 Failed download:
+['ES=F']: possibly delisted; no price data found  (1m 2026-07-04 -> 2026-07-10)
+  SP500: 2026-07-04->2026-07-10 -> 5830 rows
+  SP500: 2026-06-28->2026-07-04 -> 5838 rows
+  SP500: 2026-06-22->2026-06-28 -> 6500 rows
+  SP500: 2026-06-20->2026-06-22 -> 359 rows
+  SP500: SAVED 23987 rows -> data/market_cache/fmp_SP500_1min.csv
+=== NAS100 (NQ=F) ===
+  NAS100: 2026-07-10->2026-07-16 -> 5461 rows
+  NAS100: 2026-07-04->2026-07-10 -> 5830 rows
+  NAS100: 2026-06-28->2026-07-04 -> 5838 rows
+$NQ=F: possibly delisted; no price data found  (1m 2026-06-22 -> 2026-06-28)
+
+1 Failed download:
+['NQ=F']: possibly delisted; no price data found  (1m 2026-06-22 -> 2026-06-28)
+$NQ=F: possibly delisted; no price data found  (1m 2026-06-22 -> 2026-06-28)
+
+1 Failed download:
+['NQ=F']: possibly delisted; no price data found  (1m 2026-06-22 -> 2026-06-28)
+  NAS100: 2026-06-22->2026-06-28 -> 6500 rows
+  NAS100: 2026-06-20->2026-06-22 -> 359 rows
+  NAS100: SAVED 23988 rows -> data/market_cache/fmp_NAS100_1min.csv

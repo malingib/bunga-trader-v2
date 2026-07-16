@@ -33,6 +33,10 @@ class ParsedSignal(Base):
     ai_reason = Column(Text, nullable=True)
     executed_at = Column(DateTime, nullable=True)
     execution_result = Column(Text, nullable=True)
+    # ML reconciliation key: the engine's generated_at (ISO). Lets a trade
+    # close backfill its win/loss onto the matching ML training record
+    # (engine.MLDataLogger.update_outcome matches on (symbol, entry_time)).
+    strategy_generated_at = Column(String(32), nullable=True, index=True)
     __table_args__ = (
         CheckConstraint("action IN ('BUY', 'SELL', 'BUY_LIMIT', 'SELL_LIMIT', 'BUY_STOP', 'SELL_STOP')", name="valid_action"),
         Index("idx_status_symbol", "status", "symbol"),

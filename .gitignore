@@ -4,6 +4,7 @@ __pycache__/
 .env
 data/market_cache/
 *.jsonl
+logs/
 loop_state.json
 results.jsonl
 .hermes/

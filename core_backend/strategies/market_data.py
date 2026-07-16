@@ -78,7 +78,6 @@ YAHOO_TICKERS = {
     "XAUUSD": "GC=F",
     "SP500": "ES=F",
     "NAS100": "NQ=F",
-    "USOIL": "CL=F",
     "EURUSD": "EURUSD=X",
     "GBPUSD": "GBPUSD=X",
 }

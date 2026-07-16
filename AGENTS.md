@@ -68,10 +68,15 @@
 python run.py                              # all services
 uvicorn core_backend.main:app --reload     # API only
 
-# Test
-pytest -q                                  # full suite
-pytest tests/test_parser.py -v             # single file
-pytest -k "risk"                           # by name
+# Test  ⚠️ ALWAYS use the shim below
+# The shell may inherit a Hermes-agent PYTHONPATH that makes the 3.12 venv load
+# the wrong (3.11) pydantic and crash collection. Strip it first:
+make test                                  # full suite (preferred)
+bash scripts/test.sh -q                    # equivalent
+env -u PYTHONPATH .venv/bin/python -m pytest -q   # manual
+
+# ❌ Do NOT run bare `pytest` if PYTHONPATH contains /hermes-agent — it will fail.
+# ❌ Bare `python -m pytest` also fails for the same reason.
 
 # Lint (if available)
 ruff check core_backend/                   # if ruff installed
