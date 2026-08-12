@@ -393,10 +393,11 @@ def _exit(pos, bars, i, pip_size, pv, max_hold):
             ex = c
     if ex is None:
         return
-    pts = abs(ex - pos["entry"]) / pip_size
-    pnl = pts * pv * pos["lot"]
-    if side == "SELL":
-        pnl = -pnl
+    # Correct P&L sign: a BUY profits when exit > entry; a SELL when
+    # entry > exit. (abs()-then-negate was crediting BUY stop-losses as
+    # wins — the source of the impossible positive returns.)
+    raw = (ex - pos["entry"]) * pv * pos["lot"]
+    pnl = raw if side == "BUY" else -raw
     pos["pnl"] = pnl
     pos["closed"] = True
 

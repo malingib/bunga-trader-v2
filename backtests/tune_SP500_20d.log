@@ -1,0 +1,21 @@
+=== SP500 (23987 bars) ===
+  sl=2.0 tp=1.0 hb=30 ret=+8.35% win=28.8% trades=1811 DD=17.0%
+  sl=2.0 tp=1.0 hb=60 ret=+8.35% win=28.8% trades=1811 DD=17.0%
+  sl=2.0 tp=1.0 hb=120 ret=+8.35% win=28.8% trades=1811 DD=17.0%
+  sl=2.0 tp=2.0 hb=30 ret=-14.10% win=12.8% trades=2891 DD=27.1%
+  sl=2.0 tp=2.0 hb=60 ret=-12.80% win=12.8% trades=2900 DD=27.1%
+  sl=2.0 tp=2.0 hb=120 ret=-12.80% win=12.8% trades=2900 DD=27.1%
+  sl=2.0 tp=3.0 hb=30 ret=-33.17% win=7.4% trades=3340 DD=40.3%
+  sl=2.0 tp=3.0 hb=60 ret=-17.80% win=7.6% trades=3888 DD=38.2%
+  sl=2.0 tp=3.0 hb=120 ret=-17.80% win=7.6% trades=3888 DD=38.2%
+  sl=2.0 tp=4.0 hb=30 ret=-35.30% win=5.6% trades=2211 DD=40.4%
+  sl=2.0 tp=4.0 hb=60 ret=-34.80% win=5.4% trades=2331 DD=40.2%
+  sl=2.0 tp=4.0 hb=120 ret=-34.80% win=5.4% trades=2331 DD=40.2%
+  sl=2.0 tp=6.0 hb=30 ret=-32.50% win=3.6% trades=2726 DD=40.2%
+  sl=2.0 tp=6.0 hb=60 ret=-29.97% win=3.2% trades=2886 DD=40.3%
+  sl=2.0 tp=6.0 hb=120 ret=-29.90% win=3.1% trades=2952 DD=40.2%
+  sl=2.0 tp=8.0 hb=30 ret=-32.57% win=2.7% trades=3167 DD=40.2%
+  sl=2.0 tp=8.0 hb=60 ret=-30.93% win=2.2% trades=3310 DD=40.1%
+  sl=2.0 tp=8.0 hb=120 ret=-30.99% win=2.1% trades=3356 DD=40.1%
+  sl=4.0 tp=1.0 hb=30 ret=+5.64% win=21.3% trades=2662 DD=9.5%
+  sl=4.0 tp=1.0 hb=60 ret=+7.30% win=21.2% trades=2697 DD=9.7%
