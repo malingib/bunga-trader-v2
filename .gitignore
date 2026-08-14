@@ -8,3 +8,9 @@ logs/
 loop_state.json
 results.jsonl
 .hermes/
+
+# Runtime database files (SQLite) — never version-control live state.
+*.db
+*.db-wal
+*.db-shm
+*.log
