@@ -68,141 +68,6 @@ def _signal_to_db(signal: StrategySignal) -> int:
             return 0
 
 
-def _auto_approve(signal_id: int) -> None:
-    """Auto-approve a strategy signal immediately (no manual gate)."""
-    try:
-        with get_db() as db:
-            signal = db.query(ParsedSignal).filter(ParsedSignal.id == signal_id).first()
-            if not signal:
-                logger.warning(f"Auto-approve: signal {signal_id} not found")
-                return
-            if signal.status != SignalStatus.PENDING.value:
-                return  # already processed
-
-            balance = CONFIG.demo_balance
-            from ..risk_engine import calculate_lot_size, validate_signal_risk
-
-            valid, reason = validate_signal_risk(signal, balance)
-            if not valid:
-                signal.status = SignalStatus.REJECTED.value
-                db.commit()
-                logger.warning(f"Auto-approve: signal {signal_id} rejected by risk: {reason}")
-                return
-
-            lot, lot_err = calculate_lot_size(
-                symbol=signal.symbol,
-                entry_price=signal.entry_price,
-                sl_price=signal.sl,
-                account_balance=balance,
-            )
-            if lot_err or lot <= 0:
-                signal.status = SignalStatus.REJECTED.value
-                db.commit()
-                logger.warning(f"Auto-approve: signal {signal_id} lot sizing failed: {lot_err}")
-                return
-
-            signal.lot_size = lot
-            signal.risk_percent = CONFIG.default_risk_percent
-            signal.status = SignalStatus.APPROVED.value
-            db.commit()
-
-            # Attempt broker dispatch
-            import asyncio
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(_dispatch_signal(signal_id))
-            except RuntimeError:
-                pass  # no running loop, dispatch in sync mode
-
-            logger.info(
-                f"Signal {signal_id} auto-approved: {signal.action} {signal.symbol} "
-                f"lot={lot} @ {signal.entry_price}"
-            )
-
-    except Exception as e:
-        logger.error(f"Auto-approve failed for signal {signal_id}: {e}")
-
-
-async def _dispatch_signal(signal_id: int) -> None:
-    """Dispatch an approved signal through the active broker."""
-    from ..brokers import get_active
-
-    with get_db() as db:
-        signal = db.query(ParsedSignal).filter(ParsedSignal.id == signal_id).first()
-        if not signal or signal.status != SignalStatus.APPROVED.value:
-            return
-
-        broker = get_active()
-        if broker is None or not broker.is_connected:
-            signal.status = SignalStatus.APPROVED.value  # leave approved, will dispatch when broker connects
-            db.commit()
-            logger.info(f"Signal {signal_id} approved — no broker connected, waiting")
-            return
-
-        try:
-            result = await broker.place_order(
-                action=signal.action,
-                symbol=signal.symbol,
-                entry_price=signal.entry_price,
-                sl=signal.sl,
-                tp=signal.tp,
-                tp2=signal.tp2,
-                tp3=signal.tp3,
-                lot=signal.lot_size or 0.0,
-            )
-            if result.success:
-                from datetime import datetime
-                signal.status = SignalStatus.EXECUTED.value
-                signal.executed_at = datetime.now(timezone.utc).replace(tzinfo=None)
-                signal.execution_result = f"broker:{broker.name} order:{result.order_id}"
-                fill = result.fill_price or signal.entry_price
-                # ── Real P&L (in account currency) ──
-                # pip_size: gold 0.01, indices 1.0 (matches risk_engine)
-                from ..risk_engine import get_pip_value_per_lot, get_pip_size
-                pip_size = get_pip_size(signal.symbol)
-                pip_val = get_pip_value_per_lot(signal.symbol, fill)
-                lot = signal.lot_size or 0.0
-                points = abs(fill - signal.entry_price) / pip_size
-                pnl = points * pip_val * lot
-                if signal.action in ("SELL", "SELL_LIMIT", "SELL_STOP"):
-                    pnl = -pnl
-                outcome = "win" if pnl > 0 else "loss"
-                from ..models import TradeLog
-                trade = TradeLog(
-                    parsed_signal_id=signal.id,
-                    symbol=signal.symbol,
-                    action=signal.action,
-                    lot_size=lot,
-                    entry_price=fill,
-                    sl=signal.sl,
-                    tp=signal.tp,
-                    result="executed",
-                    pnl=pnl,
-                    executed_at=signal.executed_at,
-                )
-                db.add(trade)
-                db.commit()
-                # ── Backfill ML training outcome (closes the labelling loop) ──
-                if signal.strategy_generated_at:
-                    from datetime import datetime as _dt
-                    try:
-                        _gen = _dt.fromisoformat(signal.strategy_generated_at)
-                        from ..strategies.engine import log_trade_outcome
-                        log_trade_outcome(signal.symbol, _gen, outcome, float(pnl))
-                    except Exception as e:
-                        logger.error(f"ML outcome backfill failed for {signal.id}: {e}")
-                logger.info(
-                    f"Signal {signal_id} EXECUTED via {broker.name}: "
-                    f"order={result.order_id} fill={result.fill_price} pnl={pnl:.2f} ({outcome})"
-                )
-            else:
-                logger.warning(
-                    f"Signal {signal_id} broker rejected: {result.error}"
-                )
-        except Exception as e:
-            logger.error(f"Signal {signal_id} broker dispatch error: {e}")
-
-
 # Module-level poller instance for external callers
 _strategy_poller_instance: Optional["StrategyPoller"] = None
 
@@ -228,15 +93,15 @@ class StrategyPoller:
         signals = self.engine.run_poll()
 
         for signal in signals:
-            # Write to DB so the approval flow picks it up
+            # Write to DB as PENDING so the human approval gate picks it up.
+            # Strategy signals MUST NOT auto-approve/auto-execute (AGENTS.md:
+            # explicit human confirmation required before any broker order).
             db_id = _signal_to_db(signal)
             if db_id:
                 logger.info(
-                    f"Signal queued: {signal.symbol} {signal.action} "
+                    f"Signal queued for human approval: {signal.symbol} {signal.action} "
                     f"@ {signal.entry_price} (score={signal.quality_score})"
                 )
-                # Auto-approve immediately — no manual gate
-                _auto_approve(db_id)
             else:
                 logger.warning(
                     f"Failed to queue signal: {signal.symbol} {signal.action}"

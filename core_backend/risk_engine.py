@@ -164,6 +164,27 @@ def calculate_lot_size(
     logger.info(f"Lot for {symbol}: balance=${account_balance:.2f}, risk={risk_percent}%, SL={sl_pips:.1f}pips, pip_val=${pip_value:.2f}, lot={lot:.2f}")
     return lot, None
 
+def compute_pnl(
+    symbol: str,
+    action: str,
+    entry_price: float,
+    exit_price: float,
+    lot: float,
+    current_price: Optional[float] = None,
+) -> float:
+    """Signed realized P&L in account currency for a closed trade.
+
+    Direction is taken from the action (BUY/BUY_LIMIT/BUY_STOP = long,
+    SELL* = short). This is the SINGLE source of truth for P&L so the
+    dashboard per-symbol stats and risk-engine loss-gating agree.
+    """
+    pip_size = get_pip_size(symbol)
+    pip_val = get_pip_value_per_lot(symbol, current_price or exit_price)
+    direction = 1.0 if action in ("BUY", "BUY_LIMIT", "BUY_STOP") else -1.0
+    points = (exit_price - entry_price) / pip_size if pip_size else 0.0
+    return direction * points * pip_val * lot
+
+
 def validate_signal_risk(signal: ParsedSignal, account_balance: float) -> Tuple[bool, Optional[str]]:
     if not signal.sl:
         return False, "No stop loss defined"

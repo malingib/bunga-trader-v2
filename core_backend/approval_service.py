@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from .config import CONFIG
 from .logger import setup_logger
 from .models import ParsedSignal, SignalStatus, TradeLog
-from .risk_engine import calculate_lot_size, validate_signal_risk
+from .risk_engine import calculate_lot_size, validate_signal_risk, compute_pnl
 from .symbols import is_supported_symbol
 
 logger = setup_logger("ApprovalService")
@@ -94,18 +94,30 @@ async def _dispatch_via_broker(signal: ParsedSignal) -> Optional[Dict[str, Any]]
 
 def _create_trade_log(signal: ParsedSignal, db: Session, broker_result: Optional[Dict[str, Any]] = None) -> TradeLog:
     """Create a TradeLog entry after successful execution."""
+    fill = (
+        broker_result.get("fill_price") or signal.entry_price
+        if broker_result else signal.entry_price
+    )
+    lot = signal.lot_size or 0.0
+    # P&L computed at execution by the single source of truth (risk_engine).
+    pnl = compute_pnl(
+        symbol=signal.symbol,
+        action=signal.action,
+        entry_price=signal.entry_price or fill,
+        exit_price=fill,
+        lot=lot,
+    )
+    outcome = "win" if pnl > 0 else ("loss" if pnl < 0 else "breakeven")
     trade = TradeLog(
         parsed_signal_id=signal.id,
         symbol=signal.symbol,
         action=signal.action,
-        lot_size=signal.lot_size or 0.0,
-        entry_price=(
-            broker_result.get("fill_price") or signal.entry_price
-            if broker_result else signal.entry_price
-        ),
+        lot_size=lot,
+        entry_price=fill,
         sl=signal.sl,
         tp=signal.tp,
-        result="executed",
+        result=outcome,
+        pnl=pnl,
         executed_at=datetime.now(timezone.utc).replace(tzinfo=None),
     )
     db.add(trade)
