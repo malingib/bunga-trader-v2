@@ -9,20 +9,17 @@ import sqlite3
 
 import pytest
 
-# Keep any core_backend import from pulling live config.
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
 os.environ.setdefault("TG_API_ID", "1")
 os.environ.setdefault("TG_API_HASH", "x")
-os.environ.setdefault("TG_PHONE", "+10000000000")
+os.environ.setdefault("TG_PHONE", "+100****0000")
 os.environ.setdefault("SIGNAL_CHANNELS", "test")
 os.environ.setdefault("GOOGLE_API_KEY", "test")
 
 
 def _make_legacy_db(path: str) -> None:
-    """Create a parsed_signals table WITHOUT strategy_generated_at.
-
-    Mirrors a database that predates commit e17df00 where the ORM gained the
-    `strategy_generated_at` column but apply_migrations() didn't add it.
-    """
+    """Create a parsed_signals table WITHOUT strategy_generated_at."""
     conn = sqlite3.connect(path)
     conn.execute(
         """
@@ -56,58 +53,57 @@ def _make_legacy_db(path: str) -> None:
     conn.close()
 
 
-def test_apply_migrations_adds_strategy_generated_at(tmp_path):
+async def test_apply_migrations_adds_strategy_generated_at(tmp_path):
     from core_backend import database
 
     db_path = tmp_path / "legacy.db"
     _make_legacy_db(str(db_path))
 
     # Point the module-level engine at the legacy DB and re-run migrations.
-    engine = database.create_engine(
-        f"sqlite:///{db_path}",
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
         connect_args={"check_same_thread": False},
     )
     database.engine = engine
 
-    database.apply_migrations()
+    await database.apply_migrations()
 
-    Session = __import__(
-        "sqlalchemy.orm", fromlist=["sessionmaker"]
-    ).sessionmaker(bind=engine)
-    with Session() as db:
-        cols = {
-            r[1]
-            for r in db.execute(
-                __import__("sqlalchemy").text(
-                    "PRAGMA table_info(parsed_signals)"
-                )
-            ).fetchall()
-        }
+    SessionLocal = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
+    )
+    async with SessionLocal() as db:
+        result = await db.execute(
+            __import__("sqlalchemy").text(
+                "PRAGMA table_info(parsed_signals)"
+            )
+        )
+        cols = {r[1] for r in result.fetchall()}
     assert "strategy_generated_at" in cols
     assert "raw_signal_id" not in cols  # no-op, legacy already clean
 
 
-def test_parsedsignal_writes_strategy_generated_at(tmp_path):
+async def test_parsedsignal_writes_strategy_generated_at(tmp_path):
     """A ParsedSignal carrying strategy_generated_at must persist, no
     'no such column' error, against a migrated pre-existing DB."""
     from core_backend import database
-    from core_backend.models import Base, ParsedSignal, SignalStatus
+    from core_backend.models import ParsedSignal, SignalStatus
 
     db_path = tmp_path / "legacy2.db"
     _make_legacy_db(str(db_path))
 
-    engine = database.create_engine(
-        f"sqlite:///{db_path}",
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
         connect_args={"check_same_thread": False},
     )
     database.engine = engine
-    database.SessionLocal = __import__(
-        "sqlalchemy.orm", fromlist=["sessionmaker"]
-    ).sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    SessionLocal = async_sessionmaker(
+        bind=engine, class_=AsyncSession,
+        autoflush=False, expire_on_commit=False,
+    )
 
-    database.apply_migrations()
+    await database.apply_migrations()
 
-    with database.get_db() as db:
+    async with SessionLocal() as db:
         ps = ParsedSignal(
             action="BUY",
             symbol="XAUUSD",
@@ -116,8 +112,8 @@ def test_parsedsignal_writes_strategy_generated_at(tmp_path):
             strategy_generated_at="2026-08-14T12:00:00",
         )
         db.add(ps)
-        db.commit()
-        db.refresh(ps)
+        await db.commit()
+        await db.refresh(ps)
         assert ps.id is not None
 
     # Verify the column round-trips through a raw read.

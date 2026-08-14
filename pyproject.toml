@@ -1,0 +1,36 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["core_backend", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "ASYNC",  # async/await correctness
+]
+ignore = [
+    "E501",  # line length handled by formatter / long SQL strings OK
+    "B008",  # FastAPI route decorators call functions (intentional)
+    "UP007", # Optional[X] style is fine for our Pydantic v2 models
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+warn_unused_ignores = true
+warn_redundant_casts = true
+ignore_missing_imports = true
+disallow_untyped_defs = false
+exclude = ["data", "logs", ".venv", "backtests"]
+
+[[tool.mypy.overrides]]
+module = ["core_backend.strategies.*", "core_backend.brokers.*"]
+ignore_errors = true

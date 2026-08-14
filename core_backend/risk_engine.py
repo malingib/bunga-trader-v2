@@ -1,6 +1,8 @@
 """Bunga Trader - Risk Engine"""
 from typing import Optional, Tuple
 from datetime import datetime, date
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from .database import get_db
 from .models import TradeLog, ParsedSignal
 from .config import CONFIG
@@ -63,31 +65,37 @@ def get_pip_value_per_lot(symbol: str, current_price: Optional[float] = None) ->
                 return (0.0001 / current_price) * 100_000
             return 10.0
 
-def get_daily_trade_count() -> int:
+async def get_daily_trade_count() -> int:
     today = date.today()
     today_start = datetime.combine(today, datetime.min.time())
-    with get_db() as db:
-        return db.query(TradeLog).filter(TradeLog.executed_at >= today_start).count()
+    async with get_db() as db:
+        result = await db.execute(
+            select(TradeLog).where(TradeLog.executed_at >= today_start)
+        )
+        return len(result.scalars().all())
 
-def get_daily_pnl() -> float:
+async def get_daily_pnl() -> float:
     today = date.today()
     today_start = datetime.combine(today, datetime.min.time())
-    with get_db() as db:
-        trades = db.query(TradeLog).filter(TradeLog.executed_at >= today_start).all()
+    async with get_db() as db:
+        result = await db.execute(
+            select(TradeLog).where(TradeLog.executed_at >= today_start)
+        )
+        trades = result.scalars().all()
         return sum(t.pnl or 0 for t in trades)
 
 
-def get_consecutive_losses() -> int:
+async def get_consecutive_losses() -> int:
     """Count how many consecutive losing trades (P&L < 0) in today's trades, from most recent backward."""
     today = date.today()
     today_start = datetime.combine(today, datetime.min.time())
-    with get_db() as db:
-        trades = (
-            db.query(TradeLog)
-            .filter(TradeLog.executed_at >= today_start)
+    async with get_db() as db:
+        result = await db.execute(
+            select(TradeLog)
+            .where(TradeLog.executed_at >= today_start)
             .order_by(TradeLog.executed_at.desc())
-            .all()
         )
+        trades = result.scalars().all()
     count = 0
     for t in trades:
         if t.pnl is not None and t.pnl < 0:
@@ -97,18 +105,18 @@ def get_consecutive_losses() -> int:
     return count
 
 
-def get_daily_pnl_percent(account_balance: float) -> float:
+async def get_daily_pnl_percent(account_balance: float) -> float:
     if account_balance <= 0:
         return 0.0
-    pnl = get_daily_pnl()
+    pnl = await get_daily_pnl()
     return (pnl / account_balance) * 100.0
 
 
-def check_daily_limits(account_balance: float) -> Tuple[bool, Optional[str]]:
+async def check_daily_limits(account_balance: float) -> Tuple[bool, Optional[str]]:
     if account_balance <= 0:
         return False, "Invalid account balance"
 
-    pnl_percent = get_daily_pnl_percent(account_balance)
+    pnl_percent = await get_daily_pnl_percent(account_balance)
 
     if pnl_percent <= -CONFIG.max_daily_loss_percent:
         return False, (
@@ -120,7 +128,7 @@ def check_daily_limits(account_balance: float) -> Tuple[bool, Optional[str]]:
             f"Daily profit target hit (+{pnl_percent:.2f}% / {CONFIG.daily_profit_target_percent:.2f}%) — stopping"
         )
 
-    consec = get_consecutive_losses()
+    consec = await get_consecutive_losses()
     if consec >= CONFIG.max_consecutive_losses:
         return False, (
             f"{consec} consecutive losses reached (limit: {CONFIG.max_consecutive_losses})"
@@ -128,7 +136,8 @@ def check_daily_limits(account_balance: float) -> Tuple[bool, Optional[str]]:
 
     return True, None
 
-def calculate_lot_size(
+
+async def calculate_lot_size(
     symbol: str,
     entry_price: Optional[float],
     sl_price: Optional[float],
@@ -143,7 +152,7 @@ def calculate_lot_size(
         return 0.0, "Invalid stop loss price"
     if risk_percent <= 0 or risk_percent > 10:
         return 0.0, f"Risk percent {risk_percent}% out of range (0.1-10%)"
-    allowed, reason = check_daily_limits(account_balance)
+    allowed, reason = await check_daily_limits(account_balance)
     if not allowed:
         return 0.0, reason
     effective_entry = entry_price if entry_price else current_price

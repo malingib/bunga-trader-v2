@@ -17,6 +17,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Optional
 
+from ..logger import setup_logger
+
+logger = setup_logger("MomentumBreakout")
+
 
 @dataclass
 class MomentumConfig:
@@ -241,7 +245,7 @@ if __name__ == "__main__":
             closes.append(float(row["close"]))
 
     n = len(closes)
-    print(f"Loaded {n} XAUUSD 1-min (${closes[0]:.2f} → ${closes[-1]:.2f})")
+    logger.info("Loaded %s XAUUSD 1-min ($%.2f → $%.2f)", n, closes[0], closes[-1])
 
     for label, lb, sl, rr, tf in [
         ("Default (2,1.5,2.0)", 2, 1.5, 2.0, 0),
@@ -252,4 +256,4 @@ if __name__ == "__main__":
         sigs = MomentumBreakoutStrategy(cfg).generate(opens, highs, lows, closes)
         buys = sum(1 for s in sigs if s["action"] == "BUY")
         sells = sum(1 for s in sigs if s["action"] == "SELL")
-        print(f"  {label:<25s} → {len(sigs)} signals ({buys}B/{sells}S)")
+        logger.info("  %-25s → %s signals (%sB/%sS)", label, len(sigs), buys, sells)

@@ -31,7 +31,10 @@ class Config:
     ws_host: str = "127.0.0.1"
     ws_port: int = 8000
     webhook_secret: str = ""
-    # Broker config
+    # Optional dashboard shared-secret. When set, all mutating (POST/PUT/DELETE)
+    # requests must carry `X-Dashboard-Token: <value>`. Leave empty for the
+    # default local-only loopback deployment (no auth needed on 127.0.0.1).
+    dashboard_token: str = ""
     oanda_api_key: str = ""
     oanda_account_id: str = ""
     oanda_environment: str = "practice"
@@ -46,6 +49,7 @@ class Config:
     google_api_key: str = ""
     groq_api_key: str = ""
     openrouter_api_key: str = ""
+    dispatch_circuit_max_failures: int = 3
     # Deriv MCP endpoint (for reference)
     # WS API: wss://ws.derivws.com/websockets/v3?app_id=1089
     # REST API: https://api.deriv.com
@@ -120,6 +124,7 @@ def load_config() -> Config:
     database_url = os.getenv("DATABASE_URL", "sqlite:///data/bunga.db")
 
     webhook_secret = os.getenv("WEBHOOK_SECRET", "")
+    dashboard_token = os.getenv("DASHBOARD_TOKEN", "").strip()
 
     # Broker env vars
     oanda_api_key = os.getenv("OANDA_API_KEY", "")
@@ -149,6 +154,7 @@ def load_config() -> Config:
         log_level=log_level,
         database_url=database_url,
         webhook_secret=webhook_secret,
+        dashboard_token=dashboard_token,
         oanda_api_key=oanda_api_key,
         oanda_account_id=oanda_account_id,
         oanda_environment=oanda_environment,
