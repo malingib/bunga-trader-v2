@@ -56,6 +56,16 @@ async def cleanup_loop():
                     WHERE status = 'pending' 
                     AND parsed_at < datetime('now', '-{max_age} minutes')
                 """))
+                # Expire APPROVED-but-unexecuted signals that were never
+                # dispatched (broker never reconnected within the window).
+                approved_max_age = CONFIG.approved_signal_max_age_minutes
+                db.execute(text(f"""
+                    UPDATE parsed_signals
+                    SET status = 'rejected',
+                        execution_result = 'expired: approved but not executed within {approved_max_age}m'
+                    WHERE status = 'approved'
+                    AND parsed_at < datetime('now', '-{approved_max_age} minutes')
+                """))
                 db.commit()
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
@@ -388,6 +398,7 @@ async def broker_switch(name: str = ""):
 async def broker_reconnect():
     """Reconnect the current (or default) broker."""
     from .brokers import get_active, switch_broker, list_available
+    from .approval_service import reconcile_approved_signals
 
     current = get_active()
     if current is None:
@@ -398,10 +409,19 @@ async def broker_reconnect():
         instance = await switch_broker(next(iter(available)))
     else:
         instance = await switch_broker(current.name)
+
+    # On (re)connect, re-dispatch any APPROVED-but-unexecuted signals whose
+    # broker was previously offline, so they don't stay orphaned forever.
+    reconciled = 0
+    if instance and instance.is_connected:
+        with get_db() as db:
+            reconciled = await reconcile_approved_signals(db)
+
     return {
         "status": "ok",
         "active": instance.name if instance else None,
         "connected": instance.is_connected if instance else False,
+        "reconciled": reconciled,
     }
 
 

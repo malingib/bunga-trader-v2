@@ -24,6 +24,7 @@ class Config:
     daily_profit_target_percent: float
     min_rr_ratio: float
     signal_max_age_minutes: int
+    approved_signal_max_age_minutes: int
     demo_balance: float
     api_key: Optional[str]
     log_level: str
@@ -106,6 +107,14 @@ def load_config() -> Config:
         signal_max_age_minutes = 30
         errors.append("SIGNAL_MAX_AGE_MINUTES must be an integer")
 
+    try:
+        approved_max_age = int(os.getenv("APPROVED_SIGNAL_MAX_AGE_MINUTES", "60"))
+        if approved_max_age <= 0:
+            errors.append("APPROVED_SIGNAL_MAX_AGE_MINUTES must be positive")
+    except ValueError:
+        approved_max_age = 60
+        errors.append("APPROVED_SIGNAL_MAX_AGE_MINUTES must be an integer")
+
     api_key = os.getenv("API_KEY", "").strip() or None
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
     database_url = os.getenv("DATABASE_URL", "sqlite:///data/bunga.db")
@@ -134,6 +143,7 @@ def load_config() -> Config:
         daily_profit_target_percent=profit_target,
         min_rr_ratio=min_rr_ratio,
         signal_max_age_minutes=signal_max_age_minutes,
+        approved_signal_max_age_minutes=approved_max_age,
         demo_balance=demo_balance,
         api_key=api_key,
         log_level=log_level,
