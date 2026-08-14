@@ -140,134 +140,6 @@ def detect_regime(closes: List[float], lookback: int = 50) -> str:
 
 
 # ──────────────────────────────────────────────
-# ML Data Logger
-# ──────────────────────────────────────────────
-
-
-class MLDataLogger:
-    """Logs signals and market state to flat files for ML training."""
-
-    def __init__(self) -> None:
-        self.data_dir = Path(QUADAPT_CFG.ml_data_dir)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self._session_file = self.data_dir / f"session_{datetime.now(timezone.utc).replace(tzinfo=None).strftime('%Y%m%d_%H%M%S')}.jsonl"
-        self._feature_file = self.data_dir / "training_data.jsonl"
-
-    def log_signal(
-        self,
-        signal: StrategySignal,
-        market_features: dict,
-        outcome: Optional[str] = None,
-    ) -> None:
-        """Log a signal + market state for ML training.
-
-        Each line is a training example. Features include:
-          - technical indicators at signal time
-          - quality score components
-          - outcome (filled later when trade closes)
-        """
-        record = {
-            "timestamp": signal.generated_at.isoformat(),
-            "symbol": signal.symbol,
-            "action": signal.action,
-            "entry_price": signal.entry_price,
-            "sl": signal.sl,
-            "tp": signal.tp,
-            "quality_score": signal.quality_score,
-            "confidence": signal.confidence,
-            "signal_source": signal.signal_source,
-            "features": market_features,
-            "outcome": outcome,  # "win", "loss", None (pending)
-        }
-
-        # Append to session file
-        with open(self._session_file, "a") as f:
-            f.write(json.dumps(record) + "\n")
-
-        # Also append to cumulative training file
-        with open(self._feature_file, "a") as f:
-            f.write(json.dumps(record) + "\n")
-
-        logger.debug(f"ML data logged to {self._session_file.name}")
-
-    def update_outcome(
-        self, symbol: str, entry_time: datetime, outcome: str, pnl: float
-    ) -> None:
-        """Update a previously logged signal with its outcome.
-
-        Performs in-place reconciliation on training_data.jsonl: reads the
-        cumulative file, matches records by (symbol, entry_time), backfills
-        outcome + pnl, and writes back. Also logs to the session file for
-        audit trail.
-        """
-        # Log outcome-update record to session file for audit
-        record = {
-            "type": "outcome_update",
-            "symbol": symbol,
-            "entry_time": entry_time.isoformat(),
-            "outcome": outcome,
-            "pnl": pnl,
-            "updated_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
-        }
-        with open(self._session_file, "a") as f:
-            f.write(json.dumps(record) + "\n")
-
-        # In-place reconciliation on cumulative training file
-        if not self._feature_file.exists():
-            return
-
-        entry_iso = entry_time.isoformat()
-        updated = False
-        lines = self._feature_file.read_text().splitlines()
-        out_lines: list[str] = []
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                out_lines.append(line)
-                continue
-            # Match by symbol + entry_time (first-match wins)
-            if (
-                not updated
-                and obj.get("symbol") == symbol
-                and obj.get("timestamp") == entry_iso
-                and obj.get("outcome") is None
-            ):
-                obj["outcome"] = outcome
-                obj["pnl"] = pnl
-                obj["closed_at"] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
-                out_lines.append(json.dumps(obj))
-                updated = True
-            else:
-                out_lines.append(line)
-        self._feature_file.write_text("\n".join(out_lines) + "\n")
-        if updated:
-            logger.info(f"ML outcome backfilled: {symbol} @ {entry_iso} → {outcome}")
-        else:
-            logger.warning(
-                f"ML outcome not matched in training data: {symbol} @ {entry_iso}"
-            )
-
-
-# Module-level logger instance for external callers
-_ml_logger_instance: Optional[MLDataLogger] = None
-
-
-def get_ml_logger() -> MLDataLogger:
-    global _ml_logger_instance
-    if _ml_logger_instance is None:
-        _ml_logger_instance = MLDataLogger()
-    return _ml_logger_instance
-
-
-def log_trade_outcome(symbol: str, entry_time: datetime, outcome: str, pnl: float) -> None:
-    """Called when a trade closes — backfills outcome into ML training data."""
-    get_ml_logger().update_outcome(symbol, entry_time, outcome, pnl)
-
-
-# ──────────────────────────────────────────────
 # Quadapt Engine
 # ──────────────────────────────────────────────
 
@@ -279,7 +151,6 @@ class QuadaptEngine:
         self.cfg = QUADAPT_CFG
         self.quality_engine = SignalQualityEngine()
         self.risk_calc = RiskCalculator()
-        self.ml_logger = MLDataLogger()
 
         # Track last signal per symbol (for clustering prevention)
         self._last_signal: Dict[str, Tuple[datetime, float]] = {}
@@ -799,20 +670,6 @@ class QuadaptEngine:
             },
         )
 
-        # ── Log for ML training ──
-        if self.cfg.log_signals:
-            market_features = {
-                "price": last_close,
-                "atr": atr_vals[-1] if atr_vals else None,
-                "regime": regime,
-                "mtf_alignment": mtf_score,
-                "supertrend_dir": st_dir,
-                "stoch_rsi_k": stoch_k,
-                "squeeze": sq_active,
-                "squeeze_release": sq_released,
-            }
-            self.ml_logger.log_signal(signal, market_features)
-
         # ── Track last signal ──
         self._last_signal[symbol] = (signal.generated_at, signal.entry_price)
 
@@ -898,24 +755,6 @@ class QuadaptEngine:
                 self._last_momentum_signal[dedup_key] = sig.generated_at
                 # Store same format as evaluate() so cluster prevention works cross-path
                 self._last_signal[symbol] = (sig.generated_at, sig.entry_price)
-
-                # ML logging for self-learning pipeline
-                # Build the SAME feature schema the Quadapt path uses so
-                # ml_train.py can learn from both. quality_score goes at
-                # TOP LEVEL (ml_train reads it there), features hold the rest.
-                mom_feats = {
-                    "atr": sig.metadata.get("atr") if sig.metadata else None,
-                    "regime": "unknown",
-                    "mtf_alignment": 0.5,
-                    "supertrend_dir": None,
-                    "stoch_rsi_k": sig.metadata.get("atr"),  # placeholder until RSI added
-                    "squeeze": False,
-                    "squeeze_release": False,
-                }
-                _mom_record_feats = dict(mom_feats)
-                # Log with top-level quality_score (engine.log_signal puts
-                # quality_score at top level already; pass features only).
-                self.ml_logger.log_signal(sig, market_features=_mom_record_feats)
 
                 logger.info(
                     f"✨ [Momentum] {symbol} {sig.action} @ {sig.entry_price:.2f} "

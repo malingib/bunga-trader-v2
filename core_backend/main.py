@@ -129,11 +129,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include mobile API routes — DISABLED until we have a mobile client
-# from .mobile_api.routes import router as mobile_router
-# app.include_router(mobile_router)
-
-
 # =============================================================================
 # API ROUTES (must come BEFORE static files)
 # =============================================================================
@@ -339,14 +334,6 @@ def trade_feedback(trade_id: int, pnl: float, status: str, db: Session = Depends
     trade.result = status
     db.commit()
     logger.info(f"Trade {trade_id} feedback: PnL=${pnl:.2f}")
-
-    # Backfill ML training data with outcome
-    from .strategies.engine import log_trade_outcome
-    try:
-        log_trade_outcome(trade.symbol, trade.executed_at, status, pnl or 0.0)
-    except Exception as e:
-        logger.warning(f"ML outcome logging failed: {e}")
-
     return {"status": "updated"}
 
 
@@ -430,43 +417,8 @@ async def broker_reconnect():
 # =============================================================================
 
 
-_strategy_scheduler = None
 _strategy_poller = None
 
-
-class StrategyScheduler:
-    def __init__(self, poller: "StrategyPoller") -> None:
-        self.poller = poller
-        self._job = None
-
-    def start(self, scheduler: "AsyncIOScheduler") -> None:
-        interval = QUADAPT_CFG.market_data.poll_interval_seconds
-        self._job = scheduler.add_job(
-            self._run_safe,
-            "interval",
-            seconds=interval,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=interval,
-        )
-        logger.info("Automation scheduler started")
-
-    def stop(self) -> None:
-        if self._job is not None:
-            self._job.remove()
-            self._job = None
-        logger.info("Automation scheduler stopped")
-
-    async def _run_safe(self) -> None:
-        if not QUADAPT_CFG.enabled:
-            return
-        try:
-            await self.poller.poll_once()
-        except Exception as exc:
-            logger.error("Scheduler poll failed: %s", exc)
-
-
-strategy_scheduler: Optional[StrategyScheduler] = None
 _strategy_engine_instance = None
 
 
@@ -498,7 +450,6 @@ def strategy_status():
         "squeeze_enabled": cfg.ttm.enabled,
         "order_blocks_enabled": cfg.order_blocks.enabled,
         "poll_interval_seconds": cfg.market_data.poll_interval_seconds,
-        "ml_data_dir": cfg.ml_data_dir,
     }
 
 
@@ -514,26 +465,35 @@ async def strategy_poll():
 
 
 @app.get("/strategy/last-signals")
-def strategy_last_signals(limit: int = 20):
-    """Return raw strategy engine signals logged to ML data store."""
-    from pathlib import Path
-    data_dir = Path(_get_strategy_engine().cfg.ml_data_dir)
-    if not data_dir.exists():
-        return {"count": 0, "signals": []}
-    # Read latest session file
-    files = sorted(data_dir.glob("session_*.jsonl"), reverse=True)
-    if not files:
-        return {"count": 0, "signals": []}
-    signals = []
-    with open(files[0]) as f:
-        for line in f:
-            try:
-                import json
-                signals.append(json.loads(line))
-                if len(signals) >= limit:
-                    break
-            except json.JSONDecodeError:
-                continue
+def strategy_last_signals(limit: int = 20, db: Session = Depends(get_db_dependency)):
+    """Return the most recent strategy-generated signals from the live DB.
+
+    Replaces the old ML-data-store reader (training_data.jsonl), which no
+    longer exists — the ParsedSignal table is now the single source of truth
+    for every signal that reached the pipeline.
+    """
+    from .models import SignalStatus
+
+    rows = (
+        db.query(ParsedSignal)
+        .filter(ParsedSignal.strategy_generated_at.isnot(None))
+        .order_by(ParsedSignal.parsed_at.desc())
+        .limit(limit)
+        .all()
+    )
+    signals = [
+        {
+            "id": r.id,
+            "symbol": r.symbol,
+            "action": r.action,
+            "entry": r.entry_price,
+            "sl": r.sl,
+            "tp": r.tp,
+            "status": r.status,
+            "strategy_generated_at": r.strategy_generated_at,
+        }
+        for r in rows
+    ]
     return {"count": len(signals), "signals": signals}
 
 
@@ -730,13 +690,20 @@ async def tradingview_webhook(payload: dict):
     }
     """
 
-    # Auth: validate passphrase if configured
+    # Auth: a webhook secret MUST be configured. Without it the endpoint is
+    # open to anyone who can reach the port, so we fail CLOSED (reject) rather
+    # than silently accepting unsigned signals. Set WEBHOOK_SECRET to enable.
     webhook_secret = CONFIG.webhook_secret
-    if webhook_secret:
-        provided = payload.get("passphrase") or payload.get("secret") or ""
-        if provided != webhook_secret:
-            logger.warning("Webhook auth failed (bad passphrase)")
-            raise HTTPException(status_code=403, detail="Invalid passphrase")
+    if not webhook_secret:
+        logger.warning("Webhook rejected: WEBHOOK_SECRET not configured")
+        raise HTTPException(
+            status_code=503,
+            detail="Webhook disabled: set WEBHOOK_SECRET to enable",
+        )
+    provided = payload.get("passphrase") or payload.get("secret") or ""
+    if provided != webhook_secret:
+        logger.warning("Webhook auth failed (bad passphrase)")
+        raise HTTPException(status_code=403, detail="Invalid passphrase")
 
     # Normalise ticker (OANDA:XAUUSD → XAUUSD, NASDAQ:AAPL → AAPL)
     symbol = payload.get("symbol") or payload.get("ticker") or ""
@@ -775,8 +742,7 @@ async def tradingview_webhook(payload: dict):
         raise HTTPException(status_code=400,
                             detail=f"Unsupported symbol: {symbol}")
 
-    db = next(get_db())
-    try:
+    with get_db() as db:
         rec = ParsedSignal(
             action=action,
             symbol=symbol,
@@ -797,12 +763,6 @@ async def tradingview_webhook(payload: dict):
         db.refresh(rec)
         logger.info(f"TradingView → signal {rec.id}: {action} {symbol} @ {entry_price}")
         return {"status": "received", "signal_id": rec.id, "symbol": symbol, "action": action, "price": entry_price}
-    except Exception as e:
-        db.rollback()
-        logger.error(f"TradingView webhook failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        db.close()
 
 
 # =============================================================================

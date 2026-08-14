@@ -346,10 +346,6 @@ class QuadaptConfig:
     market_data: MarketDataConfig = field(default_factory=MarketDataConfig)
     momentum: MomentumConfig = field(default_factory=MomentumConfig)
 
-    # Data export
-    ml_data_dir: str = "data/ml_training"
-    log_signals: bool = True
-
 
 # Singleton
 QUADAPT_CFG = QuadaptConfig()

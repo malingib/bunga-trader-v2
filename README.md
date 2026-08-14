@@ -109,7 +109,10 @@ BUY LIMIT EURUSD 1.2400 SL 1.2350 TP 1.2500
 
 ## Android App
 
-The mobile API at `/mobile/*` provides endpoints optimized for Android/iOS apps:
+There is no mobile client yet. The `/mobile/*` routes referenced below are
+**not implemented** (the `mobile_api` module was never added) — do not rely on
+them. The web dashboard is the only client. When a mobile client is built, the
+endpoints below describe the intended surface.
 
 ```bash
 # Get dashboard data (single call)
@@ -126,7 +129,10 @@ POST /mobile/signals/{id}/approve
 POST /mobile/signals/{id}/reject
 ```
 
-Approval endpoints require `X-API-Key` when `API_KEY` is configured. The web dashboard includes a small key entry panel that stores the key in the current browser session.
+Approval is a manual human action in the local web dashboard. The API has no
+server-side authentication: it is intended for **local, single-user use only**
+and must never be exposed on a public network. The TradingView webhook requires
+`WEBHOOK_SECRET` to be set, and rejects unsigned requests when it is not.
 
 ## LLM Provider Stack
 

@@ -197,8 +197,7 @@ function renderStrategyStatus() {
     <div class="strategy-card"><div class="s-label">Quality Threshold</div><div class="s-value ${strategyStatus.quality_threshold >= 70 ? 'active' : 'warning'}">${strategyStatus.quality_threshold}/100</div></div>
     <div class="strategy-card"><div class="s-label">SL / TP</div><div class="s-value">${strategyStatus.sl_method} / ${strategyStatus.tp_method}</div></div>
     <div class="strategy-card"><div class="s-label">Features</div><div class="s-value" style="font-size:13px">${strategyStatus.mlma_enabled ? 'MLMA ✓' : 'MLMA ✗'} ${strategyStatus.supertrend_enabled ? 'ST ✓' : 'ST ✗'} ${strategyStatus.stoch_rsi_enabled ? 'RSI ✓' : 'RSI ✗'} ${strategyStatus.squeeze_enabled ? 'SQZ ✓' : 'SQZ ✗'} ${strategyStatus.order_blocks_enabled ? 'OB ✓' : 'OB ✗'}</div></div>
-    <div class="strategy-card"><div class="s-label">Poll Interval</div><div class="s-value">${strategyStatus.poll_interval_seconds}s</div></div>
-    <div class="strategy-card"><div class="s-label">ML Data</div><div class="s-value" style="font-size:12px">${strategyStatus.ml_data_dir || '—'}</div></div>`;
+    <div class="strategy-card"><div class="s-label">Poll Interval</div><div class="s-value">${strategyStatus.poll_interval_seconds}s</div></div>`;
   const pb = document.getElementById('pause-resume-btn');
   if (pb) { pb.textContent = strategyStatus.enabled ? '⏸ Pause Engine' : '▶ Resume Engine'; pb.dataset.paused = !strategyStatus.enabled; pb.className = `btn ${strategyStatus.enabled ? 'btn-danger' : 'btn-secondary'}`; }
   const qs = document.getElementById('quality-slider');
@@ -244,27 +243,13 @@ async function forceStrategyPoll() {
   finally { if (btn) { btn.textContent = 'Poll Now'; btn.disabled = false; } }
 }
 
-// ── API Key ──
-function getStoredApiKey() { return sessionStorage.getItem('bunga_api_key') || ''; }
-function syncApiKeyUi() {
-  const input = document.getElementById('api-key-input'), state = document.getElementById('api-key-state');
-  if (input) input.value = getStoredApiKey();
-  if (state) { const key = getStoredApiKey(); state.textContent = key ? 'API key saved' : 'API key not set'; state.className = `mini-badge ${key ? 'active' : 'inactive'}`; }
-}
-function saveApiKey() {
-  const input = document.getElementById('api-key-input'), key = input ? input.value.trim() : '';
-  if (!key) return showToast('Enter an API key', 'error');
-  sessionStorage.setItem('bunga_api_key', key); syncApiKeyUi(); showToast('API key saved', 'success');
-}
-function clearApiKey() { sessionStorage.removeItem('bunga_api_key'); syncApiKeyUi(); showToast('API key cleared', 'info'); }
-function tradeAuthHeaders() { const k = sessionStorage.getItem('bunga_api_key'); return k ? { 'X-API-Key': k } : {}; }
 async function readResponseJson(res) { try { return await res.json(); } catch (e) { return {}; } }
 
 // ── Approve / Reject ──
 async function approveSignal(id) {
   setButtonLoading(id, true);
   try {
-    const res = await fetch(`${API_BASE}/signals/${id}/approve`, { method: 'POST', headers: tradeAuthHeaders() });
+    const res = await fetch(`${API_BASE}/signals/${id}/approve`, { method: 'POST' });
     const data = await readResponseJson(res);
     if (!res.ok) throw new Error(data.detail || data.reason || `Approval failed (${res.status})`);
     showToast(data.status === 'approved' ? `Approved: ${data.lot_size} lots` : `Rejected: ${data.reason}`, data.status === 'approved' ? 'success' : 'error');
@@ -276,7 +261,7 @@ async function approveSignal(id) {
 async function rejectSignal(id) {
   setButtonLoading(id, true);
   try {
-    const res = await fetch(`${API_BASE}/signals/${id}/reject`, { method: 'POST', headers: tradeAuthHeaders() });
+    const res = await fetch(`${API_BASE}/signals/${id}/reject`, { method: 'POST' });
     const data = await readResponseJson(res);
     if (!res.ok) throw new Error(data.detail || `Reject failed (${res.status})`);
     showToast('Signal rejected', 'info'); setTimeout(loadAll, 500);
@@ -288,7 +273,7 @@ async function approveAll() {
   if (!confirm('Approve ALL pending signals?')) return;
   if (prompt('Type APPROVE ALL to confirm:') !== 'APPROVE ALL') return showToast('Cancelled', 'info');
   try {
-    const res = await fetch(`${API_BASE}/signals/approve-all`, { method: 'POST', headers: tradeAuthHeaders() });
+    const res = await fetch(`${API_BASE}/signals/approve-all`, { method: 'POST' });
     const data = await readResponseJson(res);
     if (!res.ok) throw new Error(data.detail || `Batch approve failed (${res.status})`);
     showToast(`Approved ${data.approved} signals`, 'success'); setTimeout(loadAll, 1000);

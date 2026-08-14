@@ -30,9 +30,8 @@ def _signal_to_db(signal: StrategySignal) -> int:
 
     Returns the parsed_signal.id.
     """
-    # Use the engine's generated_at as the ML reconciliation key so a later
-    # trade-close can backfill the outcome onto the matching ML record
-    # (MLDataLogger.update_outcome matches on (symbol, entry_time)).
+    # Use the engine's generated_at as the reconciliation key so a later
+    # trade-close can be matched back to this signal by (symbol, generated_at).
     gen_at = signal.generated_at
     ps = ParsedSignal(
         action=signal.action,
