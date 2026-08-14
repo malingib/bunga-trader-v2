@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 import time
+import hmac
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, date
 from typing import Optional
@@ -15,12 +16,18 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .database import engine, get_db_dependency, get_db, apply_migrations
 from .models import Base, ParsedSignal, SignalStatus, TradeLog
-from .approval_service import approve_signal_by_id, reject_signal_by_id
+from .approval_service import (
+    approve_signal_by_id,
+    reject_signal_by_id,
+    reconcile_approved_signals,
+    dispatch_circuit_open,
+    reset_dispatch_circuit,
+)
 from .risk_engine import get_daily_pnl, get_consecutive_losses
 from .config import CONFIG
 from .logger import setup_logger
@@ -33,40 +40,37 @@ _approve_all_last_at: float = 0.0
 _APPROVE_ALL_COOLDOWN_SEC = 60.0
 _SIGNAL_MAX_AGE_MINUTES = CONFIG.signal_max_age_minutes
 
-Base.metadata.create_all(bind=engine)
-apply_migrations()
-
 
 async def cleanup_loop():
     logger.info("Cleanup background task started")
     while True:
         try:
-            with get_db() as db:
+            async with get_db() as db:
                 from .models import ParsedSignal
                 # Clean old executed/rejected signals (>7 days)
-                db.execute(text("""
+                await db.execute(text("""
                     DELETE FROM parsed_signals 
                     WHERE status != 'pending' 
                     AND parsed_at < datetime('now', '-7 days')
                 """))
                 # Clean expired pending signals (older than max age)
                 max_age = CONFIG.signal_max_age_minutes
-                db.execute(text(f"""
+                await db.execute(text("""
                     DELETE FROM parsed_signals 
                     WHERE status = 'pending' 
-                    AND parsed_at < datetime('now', '-{max_age} minutes')
-                """))
+                    AND parsed_at < datetime('now', :max_age || ' minutes')
+                """).bindparams(max_age=max_age))
                 # Expire APPROVED-but-unexecuted signals that were never
                 # dispatched (broker never reconnected within the window).
                 approved_max_age = CONFIG.approved_signal_max_age_minutes
-                db.execute(text(f"""
+                await db.execute(text("""
                     UPDATE parsed_signals
                     SET status = 'rejected',
-                        execution_result = 'expired: approved but not executed within {approved_max_age}m'
+                        execution_result = 'expired: approved but not executed within ' || :approved_max_age || 'm'
                     WHERE status = 'approved'
-                    AND parsed_at < datetime('now', '-{approved_max_age} minutes')
-                """))
-                db.commit()
+                    AND parsed_at < datetime('now', :approved_max_age || ' minutes')
+                """).bindparams(approved_max_age=approved_max_age))
+                await db.commit()
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
         await asyncio.sleep(3600)
@@ -75,17 +79,21 @@ async def cleanup_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Bunga Trader API v2 starting...")
+    # Create tables + run migrations BEFORE accepting traffic.
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await apply_migrations()
+
     # Purge expired pending signals immediately on startup
     try:
-        with get_db() as db:
-            from .models import ParsedSignal
+        async with get_db() as db:
             max_age = CONFIG.signal_max_age_minutes
-            db.execute(text(f"""
+            await db.execute(text("""
                 DELETE FROM parsed_signals 
                 WHERE status = 'pending' 
-                AND parsed_at < datetime('now', '-{max_age} minutes')
-            """))
-            db.commit()
+                AND parsed_at < datetime('now', :max_age || ' minutes')
+            """).bindparams(max_age=max_age))
+            await db.commit()
     except Exception as e:
         logger.error(f"Startup cleanup error: {e}")
 
@@ -129,6 +137,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Optional dashboard shared-secret (W1). When CONFIG.dashboard_token is set,
+# every mutating request (POST/PUT/PATCH/DELETE) must carry a matching
+# `X-Dashboard-Token` header. GET/HEAD/OPTIONS stay open so the local dashboard
+# can still render on loopback. Leave DASHBOARD_TOKEN unset for the default
+# local-only deployment where loopback binding is the only control needed.
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+
+_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+async def _dashboard_auth_middleware(request, call_next):
+    if CONFIG.dashboard_token and request.method in _MUTATING_METHODS:
+        provided = request.headers.get("X-Dashboard-Token", "")
+        if not provided or not hmac.compare_digest(provided, CONFIG.dashboard_token):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Missing or invalid X-Dashboard-Token"},
+            )
+    return await call_next(request)
+
+
+if CONFIG.dashboard_token:
+    app.add_middleware(BaseHTTPMiddleware, dispatch=_dashboard_auth_middleware)
+
 # =============================================================================
 # API ROUTES (must come BEFORE static files)
 # =============================================================================
@@ -139,15 +172,22 @@ def health_check():
 
 
 @app.get("/status")
-def system_status(db: Session = Depends(get_db_dependency)):
-    all_signals = db.query(ParsedSignal).all()
+async def system_status(db: AsyncSession = Depends(get_db_dependency)):
+    result = await db.execute(select(ParsedSignal))
+    all_signals = result.scalars().all()
     pending_count = len([s for s in all_signals if s.status == SignalStatus.PENDING.value])
     approved_count = len([s for s in all_signals if s.status == SignalStatus.APPROVED.value])
     executed_count = len([s for s in all_signals if s.status == SignalStatus.EXECUTED.value])
 
     today = date.today()
     today_start = datetime.combine(today, datetime.min.time())
-    daily_trades = db.query(TradeLog).filter(TradeLog.executed_at >= today_start).count()
+    daily_result = await db.execute(
+        select(TradeLog).where(TradeLog.executed_at >= today_start)
+    )
+    daily_trades = len(daily_result.scalars().all())
+
+    daily_pnl = await get_daily_pnl()
+    consec = await get_consecutive_losses()
 
     return {
         "signals": {
@@ -157,11 +197,12 @@ def system_status(db: Session = Depends(get_db_dependency)):
         },
         "trading": {
             "daily_trades": daily_trades,
-            "daily_pnl": get_daily_pnl(),
-            "consecutive_losses": get_consecutive_losses(),
+            "daily_pnl": daily_pnl,
+            "consecutive_losses": consec,
             "max_daily_loss_pct": CONFIG.max_daily_loss_percent,
             "max_consecutive_losses": CONFIG.max_consecutive_losses,
             "daily_profit_target_pct": CONFIG.daily_profit_target_percent,
+            "trading_halted": dispatch_circuit_open(),
         },
     }
 
@@ -201,14 +242,14 @@ def market_live():
 
 
 @app.get("/signals/pending")
-def list_pending(db: Session = Depends(get_db_dependency)):
+async def list_pending(db: AsyncSession = Depends(get_db_dependency)):
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    pending = (
-        db.query(ParsedSignal)
-        .filter(ParsedSignal.status == SignalStatus.PENDING.value)
+    result = await db.execute(
+        select(ParsedSignal)
+        .where(ParsedSignal.status == SignalStatus.PENDING.value)
         .order_by(ParsedSignal.parsed_at.desc())
-        .all()
     )
+    pending = result.scalars().all()
     pending = [p for p in pending if is_supported_symbol(p.symbol)]
     return {
         "count": len(pending),
@@ -233,8 +274,9 @@ def list_pending(db: Session = Depends(get_db_dependency)):
 
 
 @app.get("/signals/{signal_id}")
-def get_signal(signal_id: int, db: Session = Depends(get_db_dependency)):
-    signal = db.query(ParsedSignal).filter(ParsedSignal.id == signal_id).first()
+async def get_signal(signal_id: int, db: AsyncSession = Depends(get_db_dependency)):
+    result = await db.execute(select(ParsedSignal).where(ParsedSignal.id == signal_id))
+    signal = result.scalar_one_or_none()
     if not signal:
         raise HTTPException(status_code=404, detail="Signal not found")
     return {
@@ -257,24 +299,24 @@ def get_signal(signal_id: int, db: Session = Depends(get_db_dependency)):
 async def approve_signal(
     signal_id: int,
     account_balance: Optional[float] = None,
-    db: Session = Depends(get_db_dependency),
+    db: AsyncSession = Depends(get_db_dependency),
 ):
     return await approve_signal_by_id(signal_id, account_balance, db)
 
 
 @app.post("/signals/{signal_id}/reject")
-def reject_signal(
+async def reject_signal(
     signal_id: int,
     reason: Optional[str] = None,
-    db: Session = Depends(get_db_dependency),
+    db: AsyncSession = Depends(get_db_dependency),
 ):
-    return reject_signal_by_id(signal_id, reason, db)
+    return await reject_signal_by_id(signal_id, reason, db)
 
 
 @app.post("/signals/approve-all")
 async def approve_all(
     account_balance: Optional[float] = None,
-    db: Session = Depends(get_db_dependency),
+    db: AsyncSession = Depends(get_db_dependency),
 ):
     global _approve_all_last_at
     now = time.monotonic()
@@ -285,7 +327,10 @@ async def approve_all(
         )
     _approve_all_last_at = now
 
-    pending = db.query(ParsedSignal).filter(ParsedSignal.status == SignalStatus.PENDING.value).all()
+    result = await db.execute(
+        select(ParsedSignal).where(ParsedSignal.status == SignalStatus.PENDING.value)
+    )
+    pending = result.scalars().all()
     results = []
     for signal in pending:
         try:
@@ -298,12 +343,14 @@ async def approve_all(
 
 
 @app.get("/trades")
-def list_trades(limit: int = 20, offset: int = 0, status: Optional[str] = None, db: Session = Depends(get_db_dependency)):
-    query = db.query(TradeLog).order_by(TradeLog.executed_at.desc())
+async def list_trades(limit: int = 20, offset: int = 0, status: Optional[str] = None, db: AsyncSession = Depends(get_db_dependency)):
+    query = select(TradeLog).order_by(TradeLog.executed_at.desc())
     if status:
-        query = query.filter(TradeLog.result == status)
-    total = query.count()
-    trades = query.offset(offset).limit(limit).all()
+        query = query.where(TradeLog.result == status)
+    total_result = await db.execute(select(TradeLog))
+    total = len(total_result.scalars().all())
+    paged = await db.execute(query.offset(offset).limit(limit))
+    trades = paged.scalars().all()
     return {
         "total": total,
         "count": len(trades),
@@ -326,13 +373,14 @@ def list_trades(limit: int = 20, offset: int = 0, status: Optional[str] = None, 
 
 
 @app.post("/trades/{trade_id}/feedback")
-def trade_feedback(trade_id: int, pnl: float, status: str, db: Session = Depends(get_db_dependency)):
-    trade = db.query(TradeLog).filter(TradeLog.id == trade_id).first()
+async def trade_feedback(trade_id: int, pnl: float, status: str, db: AsyncSession = Depends(get_db_dependency)):
+    result = await db.execute(select(TradeLog).where(TradeLog.id == trade_id))
+    trade = result.scalar_one_or_none()
     if not trade:
         raise HTTPException(status_code=404, detail="Not found")
     trade.pnl = pnl
     trade.result = status
-    db.commit()
+    await db.commit()
     logger.info(f"Trade {trade_id} feedback: PnL=${pnl:.2f}")
     return {"status": "updated"}
 
@@ -401,7 +449,7 @@ async def broker_reconnect():
     # broker was previously offline, so they don't stay orphaned forever.
     reconciled = 0
     if instance and instance.is_connected:
-        with get_db() as db:
+        async with get_db() as db:
             reconciled = await reconcile_approved_signals(db)
 
     return {
@@ -410,6 +458,17 @@ async def broker_reconnect():
         "connected": instance.is_connected if instance else False,
         "reconciled": reconciled,
     }
+
+
+@app.post("/broker/reset-circuit")
+async def broker_reset_circuit():
+    """Manually reset the dispatch circuit breaker (dashboard 'Resume trading').
+
+    Use after investigating a tripped breaker (N consecutive broker dispatch
+    failures). Execution remains blocked until this is called.
+    """
+    reset_dispatch_circuit()
+    return {"status": "ok", "trading_halted": dispatch_circuit_open()}
 
 
 # =============================================================================
@@ -465,7 +524,7 @@ async def strategy_poll():
 
 
 @app.get("/strategy/last-signals")
-def strategy_last_signals(limit: int = 20, db: Session = Depends(get_db_dependency)):
+async def strategy_last_signals(limit: int = 20, db: AsyncSession = Depends(get_db_dependency)):
     """Return the most recent strategy-generated signals from the live DB.
 
     Replaces the old ML-data-store reader (training_data.jsonl), which no
@@ -474,13 +533,13 @@ def strategy_last_signals(limit: int = 20, db: Session = Depends(get_db_dependen
     """
     from .models import SignalStatus
 
-    rows = (
-        db.query(ParsedSignal)
-        .filter(ParsedSignal.strategy_generated_at.isnot(None))
+    result = await db.execute(
+        select(ParsedSignal)
+        .where(ParsedSignal.strategy_generated_at.isnot(None))
         .order_by(ParsedSignal.parsed_at.desc())
         .limit(limit)
-        .all()
     )
+    rows = result.scalars().all()
     signals = [
         {
             "id": r.id,
@@ -546,11 +605,12 @@ def strategy_config(
 
 
 @app.get("/strategy/history")
-def strategy_history(db: Session = Depends(get_db_dependency)):
+async def strategy_history(db: AsyncSession = Depends(get_db_dependency)):
     """Return aggregated trade history with equity curve + per-symbol breakdown."""
     from collections import defaultdict
 
-    trades = db.query(TradeLog).order_by(TradeLog.executed_at.asc()).all()
+    result = await db.execute(select(TradeLog).order_by(TradeLog.executed_at.asc()))
+    trades = result.scalars().all()
     total_trades = len(trades)
     winning_trades = len([t for t in trades if t.result == "win"])
     losing_trades = len([t for t in trades if t.result == "loss"])
@@ -619,11 +679,12 @@ def strategy_history(db: Session = Depends(get_db_dependency)):
 
 
 @app.get("/performance/per-symbol")
-def performance_per_symbol(db: Session = Depends(get_db_dependency)):
+async def performance_per_symbol(db: AsyncSession = Depends(get_db_dependency)):
     """Return per-symbol P&L breakdown."""
     from collections import defaultdict
 
-    trades = db.query(TradeLog).order_by(TradeLog.executed_at.asc()).all()
+    result = await db.execute(select(TradeLog).order_by(TradeLog.executed_at.asc()))
+    trades = result.scalars().all()
     stats: dict = defaultdict(lambda: {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0, "avg_pnl": 0.0})
     for t in trades:
         sym = t.symbol
@@ -742,7 +803,7 @@ async def tradingview_webhook(payload: dict):
         raise HTTPException(status_code=400,
                             detail=f"Unsupported symbol: {symbol}")
 
-    with get_db() as db:
+    async with get_db() as db:
         rec = ParsedSignal(
             action=action,
             symbol=symbol,
@@ -759,8 +820,8 @@ async def tradingview_webhook(payload: dict):
             risk_percent=CONFIG.default_risk_percent,
         )
         db.add(rec)
-        db.commit()
-        db.refresh(rec)
+        await db.commit()
+        await db.refresh(rec)
         logger.info(f"TradingView → signal {rec.id}: {action} {symbol} @ {entry_price}")
         return {"status": "received", "signal_id": rec.id, "symbol": symbol, "action": action, "price": entry_price}
 

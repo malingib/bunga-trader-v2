@@ -4,6 +4,7 @@ fastapi>=0.104
 uvicorn[standard]>=0.24
 websockets>=12.0
 sqlalchemy>=2.0
+aiosqlite>=0.19
 python-dotenv>=1.0
 pydantic>=2.5
 aiohttp>=3.9

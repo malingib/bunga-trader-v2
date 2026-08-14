@@ -8,6 +8,7 @@ from core_backend.risk_engine import (
 )
 from core_backend.models import ParsedSignal
 
+
 class TestInstrumentType:
     def test_forex_major(self):
         assert get_instrument_type("EURUSD") == "FOREX"
@@ -21,6 +22,7 @@ class TestInstrumentType:
     def test_crypto(self):
         assert get_instrument_type("BTCUSD") == "CRYPTO"
 
+
 class TestPipValue:
     def test_eurusd(self):
         val = get_pip_value_per_lot("EURUSD")
@@ -30,25 +32,38 @@ class TestPipValue:
         val = get_pip_value_per_lot("XAUUSD")
         assert val == 1.0
 
+
 class TestLotCalculation:
-    def test_standard_forex(self, risk_db_session):
-        lot, error = calculate_lot_size(symbol="EURUSD", entry_price=1.1000, sl_price=1.0950, account_balance=10000.0, risk_percent=1.0)
+    async def test_standard_forex(self, risk_db_session):
+        lot, error = await calculate_lot_size(
+            symbol="EURUSD", entry_price=1.1000, sl_price=1.0950,
+            account_balance=10000.0, risk_percent=1.0,
+        )
         assert error is None
         assert lot > 0
         assert lot <= 1.0
 
-    def test_jpy_pair(self, risk_db_session):
-        lot, error = calculate_lot_size(symbol="USDJPY", entry_price=150.00, sl_price=149.50, account_balance=10000.0, risk_percent=1.0)
+    async def test_jpy_pair(self, risk_db_session):
+        lot, error = await calculate_lot_size(
+            symbol="USDJPY", entry_price=150.00, sl_price=149.50,
+            account_balance=10000.0, risk_percent=1.0,
+        )
         assert error is None
         assert lot > 0
 
-    def test_no_sl(self):
-        lot, error = calculate_lot_size(symbol="EURUSD", entry_price=1.1000, sl_price=None, account_balance=10000.0)
+    async def test_no_sl(self):
+        lot, error = await calculate_lot_size(
+            symbol="EURUSD", entry_price=1.1000, sl_price=None,
+            account_balance=10000.0,
+        )
         assert error is not None
         assert lot == 0.0
 
-    def test_tight_sl(self, risk_db_session):
-        lot, error = calculate_lot_size(symbol="EURUSD", entry_price=1.1000, sl_price=1.0999, account_balance=10000.0)
+    async def test_tight_sl(self, risk_db_session):
+        lot, error = await calculate_lot_size(
+            symbol="EURUSD", entry_price=1.1000, sl_price=1.0999,
+            account_balance=10000.0,
+        )
         assert error is not None
 
 

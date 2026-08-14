@@ -25,7 +25,7 @@ from ..approval_service import approve_signal_by_id
 logger = setup_logger("StrategySource")
 
 
-def _signal_to_db(signal: StrategySignal) -> int:
+async def _signal_to_db(signal: StrategySignal) -> int:
     """Write a strategy signal to the database as a ParsedSignal.
 
     Returns the parsed_signal.id.
@@ -54,15 +54,15 @@ def _signal_to_db(signal: StrategySignal) -> int:
         strategy_generated_at=gen_at.isoformat(),
     )
 
-    with get_db() as db:
+    async with get_db() as db:
         try:
             db.add(ps)
-            db.commit()
-            db.refresh(ps)
+            await db.commit()
+            await db.refresh(ps)
             logger.info(f"Strategy signal written to DB: id={ps.id} {signal.symbol} {signal.action}")
             return ps.id
         except Exception as e:
-            db.rollback()
+            await db.rollback()
             logger.error(f"Failed to write strategy signal to DB: {e}")
             return 0
 
@@ -95,7 +95,7 @@ class StrategyPoller:
             # Write to DB as PENDING so the human approval gate picks it up.
             # Strategy signals MUST NOT auto-approve/auto-execute (AGENTS.md:
             # explicit human confirmation required before any broker order).
-            db_id = _signal_to_db(signal)
+            db_id = await _signal_to_db(signal)
             if db_id:
                 logger.info(
                     f"Signal queued for human approval: {signal.symbol} {signal.action} "

@@ -1,18 +1,42 @@
-"""Bunga Trader - Database Module"""
-from contextlib import contextmanager
-from sqlalchemy import create_engine, event, text
-from sqlalchemy.orm import sessionmaker, Session
+"""Bunga Trader - Database Module
+
+Async SQLAlchemy 2.0 setup. The engine is async (aiosqlite driver) so DB
+calls inside FastAPI request handlers can `await` and release the event loop
+instead of blocking it on every query — the standard FastAPI + SQLAlchemy 2.0
+pattern. Sessions are provided via async context managers / async dependencies.
+"""
+from contextlib import asynccontextmanager
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.pool import StaticPool
+
 from .config import CONFIG
 
-engine = create_engine(
-    CONFIG.database_url,
-    connect_args={"check_same_thread": False},
+# SQLite needs the aiosqlite driver for async. Rewrite the URL scheme if the
+# configured URL is the synchronous sqlite:/// form.
+_database_url = CONFIG.database_url
+if _database_url.startswith("sqlite:///"):
+    _database_url = _database_url.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
+
+_connect_args: dict = {"check_same_thread": False}
+engine: AsyncEngine = create_async_engine(
+    _database_url,
+    connect_args=_connect_args,
     pool_pre_ping=True,
     pool_recycle=3600,
     echo=False,
 )
 
-@event.listens_for(engine, "connect")
+# Apply SQLite perf pragmas on every new connection.
+from sqlalchemy import event  # noqa: E402
+
+
+@event.listens_for(engine.sync_engine, "connect")
 def set_sqlite_pragma(dbapi_conn, connection_record):
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
@@ -20,7 +44,14 @@ def set_sqlite_pragma(dbapi_conn, connection_record):
     cursor.execute("PRAGMA cache_size=10000")
     cursor.close()
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expire_on_commit=False)
+
+SessionLocal = async_sessionmaker(
+    bind=engine,
+    class_=AsyncSession,
+    autoflush=False,
+    expire_on_commit=False,
+)
+
 
 # --- Schema migrations (manual SQL, no Alembic) ---
 # Bump the comment below when adding a new migration so the history is
@@ -38,15 +69,14 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, expi
 #     (ParsedSignal).filter(...)` raised "no such column" on the live DB and
 #     auto-approve silently failed.
 
-def _columns(conn) -> set:
+
+async def _columns(conn) -> set:
     """Return the set of column names on parsed_signals right now."""
-    return {
-        r[1]
-        for r in conn.execute(text("PRAGMA table_info(parsed_signals)")).fetchall()
-    }
+    result = await conn.execute(text("PRAGMA table_info(parsed_signals)"))
+    return {row[1] for row in result.fetchall()}
 
 
-def apply_migrations() -> None:
+async def apply_migrations() -> None:
     """Apply manual schema migrations to the live database.
 
     Idempotent and safe to call on every startup. Runs inside a single
@@ -57,17 +87,12 @@ def apply_migrations() -> None:
          wrapped in a UNIQUE + FK that ALTER TABLE DROP COLUMN cannot remove).
       2. Missing `strategy_generated_at` column → ALTER TABLE ADD COLUMN.
     """
-    with engine.begin() as conn:
-        cols = _columns(conn)
+    async with engine.begin() as conn:
+        cols = await _columns(conn)
 
         # Case 1: legacy column still present → rebuild and drop it.
         if "raw_signal_id" in cols:
-            # raw_signal_id is wrapped in a UNIQUE constraint AND a FOREIGN KEY
-            # to the (now-removed) raw_signals table. SQLite's ALTER TABLE DROP
-            # COLUMN cannot rebuild a table where the column is part of a
-            # FK/UNIQUE, so we rebuild parsed_signals manually, dropping the
-            # column and its constraints in the process.
-            conn.execute(text("""
+            await conn.execute(text("""
                 CREATE TABLE parsed_signals_new (
                     id INTEGER NOT NULL,
                     action VARCHAR(16) NOT NULL,
@@ -92,7 +117,7 @@ def apply_migrations() -> None:
                     )
                 )
             """))
-            conn.execute(text("""
+            await conn.execute(text("""
                 INSERT INTO parsed_signals_new
                     (id, action, symbol, entry_price, sl, tp, tp2, tp3,
                      raw_text, parsed_at, status, lot_size, risk_percent,
@@ -102,37 +127,38 @@ def apply_migrations() -> None:
                        ai_score, ai_reason, executed_at, execution_result
                 FROM parsed_signals
             """))
-            conn.execute(text("DROP TABLE parsed_signals"))
-            conn.execute(text("ALTER TABLE parsed_signals_new RENAME TO parsed_signals"))
-            cols = _columns(conn)
+            await conn.execute(text("DROP TABLE parsed_signals"))
+            await conn.execute(text("ALTER TABLE parsed_signals_new RENAME TO parsed_signals"))
+            cols = await _columns(conn)
 
         # Case 2: ensure strategy_generated_at exists (added in ORM rev e17df00).
         if "strategy_generated_at" not in cols:
-            conn.execute(text(
+            await conn.execute(text(
                 "ALTER TABLE parsed_signals "
                 "ADD COLUMN strategy_generated_at VARCHAR(32)"
             ))
             # Best-effort index mirror of the ORM `index=True`.
-            conn.execute(text(
+            await conn.execute(text(
                 "CREATE INDEX IF NOT EXISTS idx_strategy_generated_at "
                 "ON parsed_signals (strategy_generated_at)"
             ))
 
-@contextmanager
-def get_db() -> Session:
+
+@asynccontextmanager
+async def get_db() -> AsyncSession:
+    """Async context manager yielding a session that commits on success."""
     db = SessionLocal()
     try:
         yield db
-        db.commit()
+        await db.commit()
     except Exception:
-        db.rollback()
+        await db.rollback()
         raise
     finally:
-        db.close()
+        await db.close()
 
-def get_db_dependency() -> Session:
-    db = SessionLocal()
-    try:
+
+async def get_db_dependency() -> AsyncSession:
+    """FastAPI dependency that yields an AsyncSession for request handlers."""
+    async with get_db() as db:
         yield db
-    finally:
-        db.close()

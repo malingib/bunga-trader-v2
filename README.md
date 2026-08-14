@@ -78,23 +78,50 @@ Open http://127.0.0.1:8000 in your browser.
 
 ## API Endpoints
 
+All endpoints are **local, single-user only** — no server-side auth except the
+TradingView webhook (which requires `WEBHOOK_SECRET`) and the optional dashboard
+token (set `DASHBOARD_TOKEN` to require `X-Dashboard-Token` on mutating requests).
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | Web Dashboard |
 | `/health` | GET | Health check |
-| `/status` | GET | System status |
-| `/llm/status` | GET | LLM provider status |
+| `/status` | GET | System status (incl. `trading_halted` circuit state) |
 | `/signals/pending` | GET | List pending signals |
-| `/signals/{id}/approve` | POST | Approve & dispatch |
+| `/signals/{id}/approve` | POST | Approve & dispatch (manual human gate) |
 | `/signals/{id}/reject` | POST | Reject signal |
 | `/signals/approve-all` | POST | Approve all pending |
 | `/trades` | GET | Trade history |
-| `/ws` | WS | Bridge WebSocket |
-| `/mobile/dashboard` | GET | Mobile dashboard data |
-| `/mobile/signals` | GET | Mobile signals list |
-| `/mobile/signals/{id}/approve` | POST | Approve & dispatch from mobile |
-| `/mobile/signals/{id}/reject` | POST | Reject from mobile |
-| `/mobile/notifications` | GET | Push notification data |
+| `/broker/status` | GET | Broker connection state |
+| `/broker/connect` | POST | Reconnect broker + re-dispatch orphaned APPROVED signals |
+| `/broker/switch` | POST | Switch active broker |
+| `/broker/reset-circuit` | POST | Reset dispatch circuit breaker ("Resume trading") |
+| `/strategy/status` | GET | Strategy engine config |
+| `/strategy/poll` | POST | Force one strategy evaluation cycle |
+| `/strategy/last-signals` | GET | Recent strategy-generated signals (live DB) |
+| `/strategy/history` | GET | Aggregated trade history + equity curve |
+| `/strategy/toggle` | POST | Pause/resume strategy polling |
+| `/strategy/config` | POST | Update strategy config at runtime |
+| `/performance/per-symbol` | GET | Per-symbol P&L |
+| `/market/live` | GET | Latest prices (cached 10s) |
+| `/logs/latest` | GET | Tail of latest log file |
+| `/webhook/tradingview` | POST | TradingView Pine Script alert (requires `WEBHOOK_SECRET`) |
+
+## Data Model
+
+The single source of truth for every signal that reaches the pipeline is the
+`parsed_signals` table (`ParsedSignal` ORM model). Notable columns:
+
+- `status` — `PENDING` → `APPROVED` → `EXECUTED` (or `REJECTED`). Signals are
+  written as `PENDING` and **only** dispatched after a human approves them in
+  the dashboard; nothing auto-executes.
+- `strategy_generated_at` — ISO-8601 timestamp (`VARCHAR(32)`) set when a signal
+  originates from the strategy engine (as opposed to a manually pasted or
+  TradingView signal). It is how `/strategy/last-signals` distinguishes
+  strategy-generated signals from the rest, and how a trade close backfills its
+  outcome onto the right signal. The column is added by a manual, idempotent
+  migration in `core_backend/database.py:apply_migrations()` (no Alembic), so
+  existing databases pick it up on next startup.
 
 ## Signal Formats Supported
 
