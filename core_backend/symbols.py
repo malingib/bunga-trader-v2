@@ -4,7 +4,7 @@ Supports XAUUSD, SP500, NAS100 (and EURUSD/GBPUSD).
 Yahoo Finance ticker mapping for live data fetching.
 
 USOIL was dropped: backtests on its 1-min window showed no edge
-(best config +0.65%, target >5% NOT MET). See backtests/explore_params_results.txt.
+(best config +0.65%, target >5% NOT MET).
 """
 
 from __future__ import annotations
