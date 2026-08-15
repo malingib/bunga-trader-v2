@@ -7,7 +7,7 @@ let tradesPage = 0, tradesLimit = 20;
 let tvWidgets = {};
 
 document.addEventListener('DOMContentLoaded', () => {
-  syncApiKeyUi(); loadAll(); startAutoRefresh();
+  loadAll(); startAutoRefresh();
   setTimeout(initCharts, 1500);
 });
 
@@ -530,7 +530,6 @@ function escapeHtml(text) {
 
 // ── Init ──
 document.addEventListener('DOMContentLoaded', () => {
-  syncApiKeyUi();
   loadAll();
   startAutoRefresh();
   setTimeout(initCharts, 1500);
