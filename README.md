@@ -92,6 +92,8 @@ token (set `DASHBOARD_TOKEN` to require `X-Dashboard-Token` on mutating requests
 | `/signals/{id}/reject` | POST | Reject signal |
 | `/signals/approve-all` | POST | Approve all pending |
 | `/trades` | GET | Trade history |
+| `/trades/open-positions` | GET | Active broker open positions (read-only) |
+| `/trades/reconcile` | GET | Run position reconciliation pass (finalizes closed trades' P&L) |
 | `/broker/status` | GET | Broker connection state |
 | `/broker/connect` | POST | Reconnect broker + re-dispatch orphaned APPROVED signals |
 | `/broker/switch` | POST | Switch active broker |
@@ -118,10 +120,17 @@ The single source of truth for every signal that reaches the pipeline is the
 - `strategy_generated_at` — ISO-8601 timestamp (`VARCHAR(32)`) set when a signal
   originates from the strategy engine (as opposed to a manually pasted or
   TradingView signal). It is how `/strategy/last-signals` distinguishes
-  strategy-generated signals from the rest, and how a trade close backfills its
-  outcome onto the right signal. The column is added by a manual, idempotent
+  strategy-generated signals from the rest. The column is added by a manual, idempotent
   migration in `core_backend/database.py:apply_migrations()` (no Alembic), so
   existing databases pick it up on next startup.
+
+> **P&L note:** a `TradeLog` row is written at *execution* time with a nominal
+> P&L (entry ≈ fill). Realized P&L is finalized two ways: (1) the hourly
+> position-reconciliation loop (`GET /trades/reconcile`, also runs in the cleanup
+> loop) detects when a broker position has closed and stamps `closed_at` + an
+> approximate realized P&L; or (2) a human posts the exact figure via
+> `POST /trades/{id}/feedback`, which takes precedence and is never overwritten
+> by the reconciler.
 
 ## Signal Formats Supported
 

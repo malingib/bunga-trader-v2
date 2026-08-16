@@ -62,12 +62,16 @@ SessionLocal = async_sessionmaker(
 #     owned. Keeping it caused NOT NULL insert failures on every strategy
 #     signal.
 #
-# v3 (2026-08-14): Added `strategy_generated_at` (String(32), indexed) so a
-#     trade-close can backfill its outcome onto the matching ML training
-#     record. The ORM model gained the column in commit e17df00 but the
-#     migration never added it to existing databases, so `db.query
-#     (ParsedSignal).filter(...)` raised "no such column" on the live DB and
-#     auto-approve silently failed.
+# v3 (2026-08-14): Added `strategy_generated_at` (String(32), indexed) so
+#     strategy-originated signals are distinguishable from manual/TradingView
+#     ones and surfaced via /strategy/last-signals. The ORM model gained the
+#     column but the migration never added it to existing databases, so reads
+#     raised "no such column" on the live DB.
+#
+# v4 (2026-08-16): Added `trade_logs.closed_at` (DATETIME) for position
+#     reconciliation — the loop that finalizes TradeLog rows whose broker
+#     position has closed (approximate realized P&L). Idempotent: skipped when
+#     trade_logs is absent or the column already exists.
 
 
 async def _columns(conn) -> set:
@@ -142,6 +146,29 @@ async def apply_migrations() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_strategy_generated_at "
                 "ON parsed_signals (strategy_generated_at)"
             ))
+
+        # Case 3: ensure trade_logs.closed_at exists (position reconciliation).
+        # _columns_trades returns an empty set when the table itself is absent
+        # (fresh/legacy DB); in that case there is nothing to migrate.
+        trades_cols = await _columns_trades(conn)
+        if trades_cols and "closed_at" not in trades_cols:
+            await conn.execute(text(
+                "ALTER TABLE trade_logs ADD COLUMN closed_at DATETIME"
+            ))
+
+
+async def _columns_trades(conn) -> set:
+    """Return the set of column names on trade_logs, or empty if table absent."""
+    # Guard: trade_logs may not exist yet on a fresh/legacy DB (tables are
+    # normally created by Base.metadata.create_all at startup). Without this
+    # guard the ALTER below would raise "no such table: trade_logs".
+    tables = await conn.execute(text(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='trade_logs'"
+    ))
+    if not tables.fetchall():
+        return set()
+    result = await conn.execute(text("PRAGMA table_info(trade_logs)"))
+    return {row[1] for row in result.fetchall()}
 
 
 @asynccontextmanager

@@ -73,6 +73,13 @@ async def cleanup_loop():
                 await db.commit()
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
+        # Reconcile open broker positions against TradeLog (read-only bookkeeping:
+        # finalize trades whose broker position has closed, approximate P&L).
+        try:
+            from .trading.reconcile import reconcile_positions
+            await reconcile_positions()
+        except Exception as e:
+            logger.error(f"Position reconciliation error: {e}")
         await asyncio.sleep(3600)
 
 
@@ -383,6 +390,27 @@ async def trade_feedback(trade_id: int, pnl: float, status: str, db: AsyncSessio
     await db.commit()
     logger.info(f"Trade {trade_id} feedback: PnL=${pnl:.2f}")
     return {"status": "updated"}
+
+
+@app.get("/trades/open-positions")
+async def open_positions():
+    """Return the active broker's currently open positions (read-only)."""
+    from .trading.reconcile import get_open_positions
+
+    return {"positions": await get_open_positions()}
+
+
+@app.get("/trades/reconcile")
+async def trades_reconcile():
+    """Run a position reconciliation pass and return a summary.
+
+    Read-only bookkeeping: finalizes TradeLog rows whose broker position has
+    closed (approximate realized P&L). Never places orders or changes signal
+    status. Also runs on the hourly cleanup loop.
+    """
+    from .trading.reconcile import reconcile_positions
+
+    return await reconcile_positions()
 
 
 # =============================================================================

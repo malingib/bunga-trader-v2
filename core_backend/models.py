@@ -54,6 +54,7 @@ class TradeLog(Base):
     result = Column(String(16), nullable=False)
     pnl = Column(Float, nullable=True)
     executed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), index=True)
+    closed_at = Column(DateTime, nullable=True, index=True)
     error_message = Column(Text, nullable=True)
     __table_args__ = (Index("idx_executed_date", "executed_at"),)
 
