@@ -9,9 +9,15 @@ Two sources, both feeding the shared ``Bars`` container used by
 
   (B) load_twelvedata() — Twelve Data REST API. Needs a FREE api key
       (https://twelvedata.com, 800 req/day on the free tier) exported as
-      TWELVEDATA_API_KEY. Gives true 1-minute history (years deep) for the
-      same symbols. Results are cached to data/market_cache so re-runs don't
-      burn the daily quota.
+      TWELVEDATA_API_KEY. Gives true 1-minute history for FOREX/CRYPTO and
+      many equities. CAVEATS on the free tier (verified 2026-08):
+        * Cash indices SPX/NDX are NOT covered -> use ETF proxies SPY (S&P
+          500) / QQQ (Nasdaq-100) via TWELVE_TICKERS.
+        * 1-min outputsize is capped low and the tier is rate-limited
+          (HTTP 429 per-minute; 400 on oversized requests). Keep outputsize
+          modest and rely on the CSV cache between runs.
+        * Net: fine for spot-checking XAUUSD 1-min, not for deep index
+          backtests. yfinance (A) is the keyless default for real history.
 
 Symbol mapping (Yahoo futures proxies / Twelve Data tickers):
   XAUUSD -> GC=F  (yfinance) | XAU/USD (twelvedata)
@@ -39,9 +45,12 @@ from engine_corrected import Bars
 CACHE_DIR = Path("data/market_cache")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Our internal symbol -> provider tickers
+# Our internal symbol -> provider tickers.
+# NOTE: Twelve Data's FREE tier covers forex/crypto + many equities but NOT
+# the cash indices SPX/NDX (those 404). Use the ETF proxies SPY (S&P 500)
+# and QQQ (Nasdaq-100) instead. yfinance uses the futures contracts.
 YAHOO_TICKERS = {"XAUUSD": "GC=F", "SP500": "ES=F", "NAS100": "NQ=F"}
-TWELVE_TICKERS = {"XAUUSD": "XAU/USD", "SP500": "SPX", "NAS100": "NDX"}
+TWELVE_TICKERS = {"XAUUSD": "XAU/USD", "SP500": "SPY", "NAS100": "QQQ"}
 
 INTERNAL_SYMBOLS = ["XAUUSD", "SP500", "NAS100"]
 
@@ -55,6 +64,9 @@ def _df_to_bars(df: pd.DataFrame, date_col: str = "Date") -> Bars:
         df.columns = [c[0] for c in df.columns]
     if date_col in df.columns:
         df = df.set_index(date_col)
+    elif df.index.name is None and len(df.columns) >= 5:
+        # Cache written via reset_index(): the date landed in column 0.
+        df = df.set_index(df.columns[0])
     for idx, row in df.iterrows():
         try:
             bars.o.append(float(row["Open"]))
@@ -89,7 +101,7 @@ def load_yfinance(
 
     cache_file = CACHE_DIR / f"yf_{symbol}_{interval}_{period}.csv"
     if cache and cache_file.exists():
-        df = pd.read_csv(cache_file, parse_dates=["Date"])
+        df = pd.read_csv(cache_file)
         return _df_to_bars(df)
 
     df = yf.download(
@@ -113,16 +125,19 @@ def load_yfinance(
 def load_twelvedata(
     symbol: str,
     interval: str = "1min",
-    outputsize: int = 5000,
+    outputsize: int = 2000,
     cache_ttl_sec: int = 86_400,
 ) -> Bars:
     """Load OHLC bars from Twelve Data (FREE key via TWELVEDATA_API_KEY).
 
-    Returns true 1-minute (or other interval) history, years deep — the
-    keyless yfinance 1m 7-day cap does not apply. Caches to CSV with a TTL so
-    re-runs don't consume the 800 req/day free quota.
+    Returns true 1-minute (or other interval) history for forex/crypto and
+    many equities (NOT cash indices — use SPY/QQQ proxies). The free tier
+    caps outputsize and is rate-limited; keep outputsize modest (<=2000 for
+    1min) and rely on the on-disk cache between runs. Caches to CSV with a
+    TTL so re-runs don't burn the 800 req/day (and per-minute) quota.
     """
     import urllib.request
+    import urllib.error
 
     if symbol not in TWELVE_TICKERS:
         raise ValueError(f"Unknown symbol {symbol!r}; expected one of {INTERNAL_SYMBOLS}")
@@ -143,8 +158,17 @@ def load_twelvedata(
         f"?symbol={ticker}&interval={interval}&outputsize={outputsize}"
         f"&format=JSON&apikey={api_key}"
     )
-    with urllib.request.urlopen(url, timeout=30) as resp:
-        payload = json.loads(resp.read().decode())
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            payload = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            raise RuntimeError(
+                "Twelve Data rate limit (429). Free tier is throttled per-minute "
+                "and 800 req/day. Wait a minute and re-run; cached data is used "
+                "when fresh."
+            )
+        raise
 
     if "values" not in payload:
         raise RuntimeError(f"Twelve Data error: {payload.get('status', payload)}")
