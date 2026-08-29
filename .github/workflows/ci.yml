@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, research-lab]
   pull_request:
 
 jobs:
@@ -21,13 +21,10 @@ jobs:
           python -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip
-          # Install runtime + test deps. requirements.txt is the source of truth.
           pip install -r requirements.txt
           pip install pytest pytest-asyncio
 
       - name: Run test suite
-        # The Makefile strips the leaked Hermes-agent PYTHONPATH that otherwise
-        # makes the 3.12 venv import the wrong (3.11) pydantic and crash.
         run: make test
 
       - name: Lint (best-effort)
