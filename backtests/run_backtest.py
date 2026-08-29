@@ -15,8 +15,8 @@ from engine_corrected import run_momentum_backtest
 from data_loader import load, INTERNAL_SYMBOLS
 
 DEFAULTS = dict(
-    sl_atr=1.2, rr=4.0, trend_ema=0, start_equity=1000.0,
-    risk_pct=1.0, max_dd_pct=40.0, max_hold=15, warmup=200,
+    sl_atr=2.0, rr=3.0, trend_ema=100, start_equity=1000.0,
+    risk_pct=1.0, max_dd_pct=30.0, max_hold=30, warmup=200,
 )
 
 

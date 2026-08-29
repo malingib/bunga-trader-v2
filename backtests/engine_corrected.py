@@ -113,6 +113,8 @@ class BacktestResult:
     min_equity_seen: float
     killed_by_dd: bool = False
     notes: str = ""
+    equity: List[float] = field(default_factory=list)   # full equity curve (per bar)
+    trade_pnls: List[float] = field(default_factory=list)  # per closed-trade P&L ($)
 
 
 def run_momentum_backtest(
@@ -127,6 +129,7 @@ def run_momentum_backtest(
     max_dd_pct: float = 40.0,
     max_hold: int = 15,
     warmup: int = 200,
+    max_consec_losses: int = 0,
     label: str = "",
 ) -> BacktestResult:
     """Bar-by-bar momentum breakout with CORRECT risk-based sizing.
@@ -134,6 +137,10 @@ def run_momentum_backtest(
     P&L is computed in currency via lot * pip_value * (points moved), where
     points = price distance / pip_size. For gold pip_size=0.01, for indices
     pip_size=1.0 (a 'pip' = 1 index point, matching pip_value=50/pt).
+
+    max_consec_losses: if >0, sit out new entries after N consecutive losing
+    trades, resuming only after a win. A drawdown circuit-breaker on the
+    strategy itself (robustifies OOS tails without changing the edge).
     """
     d = bars
     n = len(d.c)
@@ -158,7 +165,10 @@ def run_momentum_backtest(
     trades = wins = 0
     pos = None
     killed = False
+    paused = False
+    consec_losses = 0
     equity = [bal]
+    trade_pnls: List[float] = []
 
     for i in range(max(warmup, 2), n):
         if killed:
@@ -186,8 +196,15 @@ def run_momentum_backtest(
                     pnl = -pnl
                 bal += pnl
                 trades += 1
+                trade_pnls.append(pnl)
                 if pnl > 0:
                     wins += 1
+                    consec_losses = 0
+                    paused = False  # a win clears the consecutive-loss pause
+                else:
+                    consec_losses += 1
+                    if max_consec_losses > 0 and consec_losses >= max_consec_losses:
+                        paused = True
                 if bal > peak:
                     peak = bal
                 # kill if drawdown breach
@@ -200,6 +217,8 @@ def run_momentum_backtest(
         if pos is not None:
             continue
         if killed:
+            continue
+        if paused:
             continue
         a = atr[i]
         if a <= 0 or math.isnan(a) or i < 2:
@@ -258,4 +277,6 @@ def run_momentum_backtest(
         min_equity_seen=round(min_eq, 2),
         killed_by_dd=killed,
         notes=label,
+        equity=equity,
+        trade_pnls=trade_pnls,
     )
