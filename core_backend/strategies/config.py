@@ -303,6 +303,60 @@ class MomentumConfig:
 
 
 @dataclass
+class OpeningRangeBreakoutConfig:
+    """Opening Range Breakout system-level config.
+
+    Disabled by default so the existing momentum path remains the live default.
+    Per-symbol defaults tune session, tick size, and minimum opening-range width.
+    """
+
+    enabled: bool = False
+    warmup: int = 200
+    session: str = "auto"
+    bar_minutes: float = 1.0
+    opening_range_minutes: int = 15
+    breakout_buffer_pct: float = 0.0001
+    breakout_atr_mult: float = 0.25
+    retest_tolerance_pct: float = 0.0001
+    retest_or_width_pct: float = 0.05
+    retest_atr_mult: float = 0.20
+    retest_window_minutes: int = 30
+    rejection_window_minutes: int = 15
+    max_entry_minutes: int = 90
+    max_trades_per_session: int = 1
+    sl_atr: float = 1.0
+    stop_atr_mult: float = 0.10
+    rr: float = 1.5
+    max_hold_minutes: int = 120
+    atr_period: int = 14
+    tick_size: float = 0.01
+    min_or_width_ticks: int = 10
+    min_or_width_atr: float = 0.0
+    max_or_width_atr: float = 8.0
+    require_retest: bool = True
+    breakout_mode: str = "close"
+    rejection_mode: str = "close_or_wick"
+    min_quality_score: float = 65.0
+    max_quality_score: float = 95.0
+    # Per-symbol overrides tune session, tick size, minimum opening-range width,
+    # and whether a retest/rejection is required before entry. `require_retest`
+    # is set per symbol from the Jun–Jul 2026 1-min backtest:
+    #   - XAUUSD: require_retest=True  (best variant +3.3% / PF 1.47 was retest=Y)
+    #   - SP500 : require_retest=False (best variant +6.9% / PF 1.83 was retest=N)
+    #   - NAS100: require_retest=True  (retest=Y marginally beat retest=N post-gate-fix)
+    #   - EURUSD/GBPUSD: untested -> keep the safer retest=True default.
+    # NOTE: the live fill model uses next-bar-open, not wick/close fills, so the
+    # retest gate is the main guard against noise entries — flip with care.
+    defaults: dict = field(default_factory=lambda: {
+        "XAUUSD": dict(session="new_york", tick_size=0.01, min_or_width_ticks=15, require_retest=True),
+        "SP500": dict(session="new_york", tick_size=0.25, min_or_width_ticks=8, require_retest=False),
+        "NAS100": dict(session="new_york", tick_size=0.25, min_or_width_ticks=12, require_retest=True),
+        "EURUSD": dict(session="london", tick_size=0.00001, min_or_width_ticks=15, require_retest=True),
+        "GBPUSD": dict(session="london", tick_size=0.00001, min_or_width_ticks=18, require_retest=True),
+    })
+
+
+@dataclass
 class MarketDataConfig:
     """Free market data API configuration."""
 
@@ -345,6 +399,7 @@ class QuadaptConfig:
     price_action: PriceActionConfig = field(default_factory=PriceActionConfig)
     market_data: MarketDataConfig = field(default_factory=MarketDataConfig)
     momentum: MomentumConfig = field(default_factory=MomentumConfig)
+    orb: OpeningRangeBreakoutConfig = field(default_factory=OpeningRangeBreakoutConfig)
 
 
 # Singleton

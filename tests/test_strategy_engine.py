@@ -4,7 +4,7 @@ Mocks market data so tests stay offline and deterministic.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -49,6 +49,28 @@ def _snapshot(symbol: str, closes, highs, lows):
         candles.append(c)
 
     return MarketSnapshot(symbol=symbol, candles=candles, fetched_at=datetime.now(timezone.utc).replace(tzinfo=None))
+
+
+def _snapshot_with_times(symbol: str, rows):
+    from core_backend.strategies.market_data import Candle, MarketSnapshot
+
+    candles = []
+    for ts, o, h, l, c in rows:
+        candles.append(
+            Candle(
+                time=ts,
+                open=float(o),
+                high=float(h),
+                low=float(l),
+                close=float(c),
+                volume=100.0,
+            )
+        )
+    return MarketSnapshot(
+        symbol=symbol,
+        candles=candles,
+        fetched_at=datetime.now(timezone.utc).replace(tzinfo=None),
+    )
 
 
 # ──────────────────────────────────────────────
@@ -144,3 +166,73 @@ class TestEnginePipeline:
         ):
             signals = engine.run_poll()
             assert signals == []
+
+
+class TestORBPerSymbolConfig:
+    """require_retest is resolved per-symbol by _run_orb_poll via the same
+    sym_cfg.get(...) pattern. Verify the live config honors per-symbol overrides
+    (XAUUSD/NAS100 -> retest=True, SP500 -> retest=False) and falls back to the
+    global default for symbols without an explicit override (EURUSD/GBPUSD)."""
+
+    def _resolved(self, symbol: str) -> bool:
+        oc = QUADAPT_CFG.orb
+        sym_cfg = oc.defaults.get(symbol, {})
+        return sym_cfg.get("require_retest", oc.require_retest)
+
+    def test_xauusd_requires_retest(self):
+        assert self._resolved("XAUUSD") is True
+
+    def test_nas100_requires_retest(self):
+        assert self._resolved("NAS100") is True
+
+    def test_sp500_skips_retest(self):
+        assert self._resolved("SP500") is False
+
+    def test_unknown_symbol_falls_back_to_global_default(self):
+        # No override -> inherits the global require_retest (currently True).
+        assert self._resolved("BTCUSD") is QUADAPT_CFG.orb.require_retest
+
+
+class TestORBPolling:
+    def test_run_poll_routes_to_orb_when_enabled(self):
+        engine = QuadaptEngine()
+        engine.cfg.orb.enabled = True
+        engine.cfg.orb.warmup = 1
+        engine.cfg.momentum.enabled = False
+        engine.cfg.market_data.symbols = ["XAUUSD"]
+
+        bar_time = datetime.now(timezone.utc).replace(tzinfo=None)
+        snapshot = _snapshot_with_times("XAUUSD", [(bar_time, 100.0, 101.0, 99.0, 100.5)])
+        fake_result = {
+            "symbol": "XAUUSD",
+            "action": "BUY",
+            "entry_price": 100.5,
+            "sl": 99.0,
+            "tp": 102.75,
+            "quality_score": 82.0,
+            "signal_source": "opening_range_breakout",
+            "confidence": "high",
+            "generated_at": bar_time.isoformat(),
+            "hold_bars": 120,
+            "metadata": {"bar_time": bar_time.isoformat()},
+        }
+
+        class _FakeOrbStrategy:
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+            def check_latest(self, opens, highs, lows, closes, symbol="XAUUSD", times=None):
+                return fake_result
+
+        with patch(
+            "core_backend.strategies.engine.fetch_market_data",
+            return_value=snapshot,
+        ), patch(
+            "core_backend.strategies.engine.OpeningRangeBreakoutStrategy",
+            _FakeOrbStrategy,
+        ):
+            signals = engine.run_poll()
+
+        assert len(signals) == 1
+        assert signals[0].signal_source == "opening_range_breakout"
+        assert signals[0].action == "BUY"

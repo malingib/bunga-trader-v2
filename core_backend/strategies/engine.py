@@ -38,6 +38,10 @@ from .indicators import (
 from . import price_action
 from .market_data import MarketSnapshot, fetch_market_data
 from .momentum_breakout import MomentumBreakoutStrategy, MomentumConfig as MomCfg
+from .opening_range_breakout import (
+    OpeningRangeBreakoutStrategy,
+    OpeningRangeBreakoutConfig as OrbCfg,
+)
 from .quality_engine import SignalQualityEngine
 from .risk import RiskCalculator
 from ..logger import setup_logger
@@ -156,6 +160,8 @@ class QuadaptEngine:
         self._last_signal: Dict[str, Tuple[datetime, float]] = {}
         # Per-direction dedup for momentum path (symbol+action -> generated_at)
         self._last_momentum_signal: Dict[str, datetime] = {}
+        # Per-bar dedup for ORB path (symbol+action+bar_time -> generated_at)
+        self._last_orb_signal: Dict[str, datetime] = {}
 
     def _mean_reversion_trigger(
         self,
@@ -686,6 +692,11 @@ class QuadaptEngine:
 
         Returns list of generated signals (one per symbol at most per poll).
         """
+        # Use ORB breakout strategy when configured; it takes precedence over
+        # momentum so the two 1-min breakout paths are not polled simultaneously.
+        if self.cfg.orb.enabled:
+            return self._run_orb_poll()
+
         # Use momentum breakout strategy when configured
         if self.cfg.momentum.enabled:
             return self._run_momentum_poll()
@@ -762,5 +773,92 @@ class QuadaptEngine:
                 )
             except Exception as e:
                 logger.error(f"Error in momentum poll for {symbol}: {e}")
+                continue
+        return signals
+
+    def _run_orb_poll(self) -> List[StrategySignal]:
+        """Run opening-range breakout strategy for all configured symbols."""
+        oc = self.cfg.orb
+        signals: List[StrategySignal] = []
+        for symbol in self.cfg.market_data.symbols:
+            try:
+                snapshot = fetch_market_data(symbol, interval=self.cfg.market_data.interval)
+                if not snapshot or len(snapshot.closes) < oc.warmup:
+                    continue
+
+                sym_cfg = oc.defaults.get(symbol, {})
+                cfg = OrbCfg(
+                    session=sym_cfg.get("session", oc.session),
+                    bar_minutes=sym_cfg.get("bar_minutes", oc.bar_minutes),
+                    opening_range_minutes=sym_cfg.get("opening_range_minutes", oc.opening_range_minutes),
+                    breakout_buffer_pct=sym_cfg.get("breakout_buffer_pct", oc.breakout_buffer_pct),
+                    breakout_atr_mult=sym_cfg.get("breakout_atr_mult", oc.breakout_atr_mult),
+                    retest_tolerance_pct=sym_cfg.get("retest_tolerance_pct", oc.retest_tolerance_pct),
+                    retest_or_width_pct=sym_cfg.get("retest_or_width_pct", oc.retest_or_width_pct),
+                    retest_atr_mult=sym_cfg.get("retest_atr_mult", oc.retest_atr_mult),
+                    retest_window_minutes=sym_cfg.get("retest_window_minutes", oc.retest_window_minutes),
+                    rejection_window_minutes=sym_cfg.get("rejection_window_minutes", oc.rejection_window_minutes),
+                    max_entry_minutes=sym_cfg.get("max_entry_minutes", oc.max_entry_minutes),
+                    max_trades_per_session=sym_cfg.get("max_trades_per_session", oc.max_trades_per_session),
+                    sl_atr=sym_cfg.get("sl_atr", oc.sl_atr),
+                    stop_atr_mult=sym_cfg.get("stop_atr_mult", oc.stop_atr_mult),
+                    rr=sym_cfg.get("rr", oc.rr),
+                    max_hold_minutes=sym_cfg.get("max_hold_minutes", oc.max_hold_minutes),
+                    atr_period=sym_cfg.get("atr_period", oc.atr_period),
+                    tick_size=sym_cfg.get("tick_size", oc.tick_size),
+                    min_or_width_ticks=sym_cfg.get("min_or_width_ticks", oc.min_or_width_ticks),
+                    min_or_width_atr=sym_cfg.get("min_or_width_atr", oc.min_or_width_atr),
+                    max_or_width_atr=sym_cfg.get("max_or_width_atr", oc.max_or_width_atr),
+                    require_retest=sym_cfg.get("require_retest", oc.require_retest),
+                    breakout_mode=sym_cfg.get("breakout_mode", oc.breakout_mode),
+                    rejection_mode=sym_cfg.get("rejection_mode", oc.rejection_mode),
+                    min_quality_score=sym_cfg.get("min_quality_score", oc.min_quality_score),
+                    max_quality_score=sym_cfg.get("max_quality_score", oc.max_quality_score),
+                )
+                strat = OpeningRangeBreakoutStrategy(cfg)
+                times = [candle.time for candle in snapshot.candles]
+                result = strat.check_latest(
+                    snapshot.opens,
+                    snapshot.highs,
+                    snapshot.lows,
+                    snapshot.closes,
+                    symbol=symbol,
+                    times=times,
+                )
+                if result is None:
+                    continue
+
+                sig = StrategySignal(
+                    symbol=result["symbol"],
+                    action=result["action"],
+                    entry_price=result["entry_price"],
+                    sl=result["sl"],
+                    tp=result["tp"],
+                    quality_score=result["quality_score"],
+                    signal_source=result["signal_source"],
+                    confidence=result["confidence"],
+                    hold_bars=result["hold_bars"],
+                    generated_at=datetime.fromisoformat(result["generated_at"]),
+                    metadata=result.get("metadata"),
+                )
+
+                bar_time = (result.get("metadata") or {}).get("bar_time", sig.generated_at.isoformat())
+                dedup_key = f"{symbol}:{sig.action}:{bar_time}"
+                if dedup_key in self._last_orb_signal:
+                    continue
+
+                if len(self._last_orb_signal) > 1000:
+                    self._last_orb_signal.clear()
+
+                signals.append(sig)
+                self._last_orb_signal[dedup_key] = sig.generated_at
+                self._last_signal[symbol] = (sig.generated_at, sig.entry_price)
+
+                logger.info(
+                    f"✨ [ORB] {symbol} {sig.action} @ {sig.entry_price:.5f} "
+                    f"| SL: {sig.sl:.5f} TP: {sig.tp:.5f} | Score: {sig.quality_score}"
+                )
+            except Exception as e:
+                logger.error(f"Error in ORB poll for {symbol}: {e}")
                 continue
         return signals

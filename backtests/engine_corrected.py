@@ -115,6 +115,7 @@ class BacktestResult:
     notes: str = ""
     equity: List[float] = field(default_factory=list)   # full equity curve (per bar)
     trade_pnls: List[float] = field(default_factory=list)  # per closed-trade P&L ($)
+    trades_log: List[dict] = field(default_factory=list)  # per-trade {entry_index, side, pnl}
 
 
 def run_momentum_backtest(
@@ -130,6 +131,7 @@ def run_momentum_backtest(
     max_hold: int = 15,
     warmup: int = 200,
     max_consec_losses: int = 0,
+    cost: float = 0.0,
     label: str = "",
 ) -> BacktestResult:
     """Bar-by-bar momentum breakout with CORRECT risk-based sizing.
@@ -169,6 +171,7 @@ def run_momentum_backtest(
     consec_losses = 0
     equity = [bal]
     trade_pnls: List[float] = []
+    trades_log: List[dict] = []
 
     for i in range(max(warmup, 2), n):
         if killed:
@@ -190,7 +193,11 @@ def run_momentum_backtest(
             if exit_px is None and (i - pos["idx"]) >= max_hold:
                 exit_px = d.c[i]
             if exit_px is not None:
-                points = abs(exit_px - pos["entry"]) / pip_size
+                # Round-trip transaction cost (entry+exit). Default 0 keeps the
+                # original frictionless behaviour; ORB comparison passes the same
+                # round_trip_cost so the two engines are directly comparable.
+                adj_exit = exit_px - cost if pos["side"] == "BUY" else exit_px + cost
+                points = abs(adj_exit - pos["entry"]) / pip_size
                 pnl = points * pv * pos["lot"]
                 if pos["side"] == "SELL":
                     pnl = -pnl
@@ -210,6 +217,7 @@ def run_momentum_backtest(
                 # kill if drawdown breach
                 if (peak - bal) / peak * 100 >= max_dd_pct:
                     killed = True
+                trades_log.append(dict(entry_index=pos["idx"], side=pos["side"], pnl=pnl))
                 pos = None
             equity.append(bal)
         else:
@@ -279,4 +287,5 @@ def run_momentum_backtest(
         notes=label,
         equity=equity,
         trade_pnls=trade_pnls,
+        trades_log=trades_log,
     )
