@@ -105,7 +105,7 @@ def _rate_limit(key: str):
 
 def _fetch_ohlcv(symbol: str, interval: str, count: int) -> Optional[List[Candle]]:
     """Try cache first, then yfinance. Returns None on failure."""
-    cache_file = CACHE_DIR / f"yahoo_{symbol}_{interval}.parquet"
+    cache_file = CACHE_DIR / f"yahoo_{symbol}_{interval}.csv"
     cache_age = (
         time.time() - cache_file.stat().st_mtime if cache_file.exists() else 9999
     )
@@ -113,7 +113,7 @@ def _fetch_ohlcv(symbol: str, interval: str, count: int) -> Optional[List[Candle
     # Cache valid for 120 seconds (longer than poll interval to avoid thrash)
     if cache_file.exists() and cache_age < 120:
         try:
-            df = pd.read_parquet(cache_file)
+            df = pd.read_csv(cache_file)
             candles = _df_to_candles(df)
             if candles is not None:
                 logger.debug(f"Cache HIT {symbol} ({len(candles)} candles)")
@@ -142,14 +142,14 @@ def _fetch_ohlcv(symbol: str, interval: str, count: int) -> Optional[List[Candle
         logger.error(f"yfinance fetch failed for {symbol}: {e}")
         # Fall back to cache
         if cache_file.exists():
-            df = pd.read_parquet(cache_file)
+            df = pd.read_csv(cache_file)
             return _df_to_candles(df)
         return None
 
     if df is None or df.empty:
         logger.warning(f"Empty response from yfinance for {symbol}")
         if cache_file.exists():
-            df = pd.read_parquet(cache_file)
+            df = pd.read_csv(cache_file)
             return _df_to_candles(df)
         return None
 
@@ -162,7 +162,7 @@ def _fetch_ohlcv(symbol: str, interval: str, count: int) -> Optional[List[Candle
 
     # Write cache
     try:
-        _candles_to_parquet(candles, cache_file)
+        _candles_to_csv(candles, cache_file)
     except Exception as e:
         logger.debug(f"Cache write failed: {e}")
 
@@ -199,18 +199,20 @@ def _yf_df_to_candles(df: pd.DataFrame) -> List[Candle]:
 
 
 def _df_to_candles(df: pd.DataFrame) -> Optional[List[Candle]]:
-    """Read cached parquet DataFrame to Candle list."""
+    """Read cached CSV DataFrame (written by _candles_to_csv) to Candle list."""
     candles: List[Candle] = []
     for _, row in df.iterrows():
         try:
+            ts_raw = row["time"]
+            ts = pd.to_datetime(ts_raw).to_pydatetime() if ts_raw is not None else None
             candles.append(
                 Candle(
-                    time=row["time"],
-                    open=row["open"],
-                    high=row["high"],
-                    low=row["low"],
-                    close=row["close"],
-                    volume=row.get("volume", 0),
+                    time=ts,
+                    open=float(row["open"]),
+                    high=float(row["high"]),
+                    low=float(row["low"]),
+                    close=float(row["close"]),
+                    volume=int(row.get("volume", 0) or 0),
                 )
             )
         except (KeyError, ValueError, TypeError):
@@ -218,11 +220,11 @@ def _df_to_candles(df: pd.DataFrame) -> Optional[List[Candle]]:
     return candles if candles else None
 
 
-def _candles_to_parquet(candles: List[Candle], path: Path):
-    """Write Candle list to parquet cache."""
+def _candles_to_csv(candles: List[Candle], path: Path):
+    """Write Candle list to CSV cache (no pyarrow/fastparquet dependency)."""
     df = pd.DataFrame(
         {
-            "time": [c.time for c in candles],
+            "time": [c.time.isoformat() if c.time else "" for c in candles],
             "open": [c.open for c in candles],
             "high": [c.high for c in candles],
             "low": [c.low for c in candles],
@@ -230,7 +232,7 @@ def _candles_to_parquet(candles: List[Candle], path: Path):
             "volume": [c.volume for c in candles],
         }
     )
-    df.to_parquet(path)
+    df.to_csv(path, index=False)
 
 
 # ──────────────────────────────────────────────
