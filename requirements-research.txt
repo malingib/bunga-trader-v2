@@ -1,0 +1,7 @@
+# Historical quantitative research stack
+pandas>=2.2
+numpy>=1.26
+pytest>=8.0
+pytest-asyncio>=0.23
+# Optional data acquisition used by backtests/data_loader.py
+yfinance>=0.2.40
