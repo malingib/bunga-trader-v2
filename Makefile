@@ -9,7 +9,7 @@ test:
 	$(PYTEST) -q
 
 test-research:
-	$(PYTEST) -q tests/test_research_lab.py
+	$(PYTEST) -q tests/research
 
 test-fast:
 	$(PYTEST) -q -k "$(f)"
@@ -25,4 +25,4 @@ lint:
 	@if [ -x "$(VENV)/mypy" ]; then $(VENV)/mypy core_backend || true; else echo "mypy not installed — skipping"; fi
 
 lint-research:
-	@if [ -x "$(VENV)/ruff" ]; then $(VENV)/ruff check backtests || true; else echo "ruff not installed — skipping"; fi
+	@if [ -x "$(VENV)/ruff" ]; then $(VENV)/ruff check backtests tests/research || true; else echo "ruff not installed — skipping"; fi
