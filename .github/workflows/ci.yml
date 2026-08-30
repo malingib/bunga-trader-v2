@@ -6,26 +6,38 @@ on:
   pull_request:
 
 jobs:
-  test:
+  research-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install research dependencies
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install -r requirements-research.txt
+      - name: Run research tests
+        run: make test-research
+      - name: Lint research code
+        run: make lint-research
 
-      - name: Create venv and install deps
+  application-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install application dependencies
         run: |
           python -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio
-
-      - name: Run test suite
+      - name: Run application tests
         run: make test
-
-      - name: Lint (best-effort)
-        run: make lint
