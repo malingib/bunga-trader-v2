@@ -1,0 +1,50 @@
+name: Historical Research Tournament
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [research-lab]
+
+jobs:
+  tournament:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install research stack
+        run: python -m pip install -r requirements-research.txt
+      - name: Download reproducible research dataset
+        run: |
+          mkdir -p data/market_cache
+          python - <<'PY'
+          import yfinance as yf
+          from pathlib import Path
+          universe = {
+              "forex": ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "USDCHF=X"],
+              "metals": ["GC=F", "SI=F"],
+              "indices": ["^GSPC", "^NDX", "^DJI", "^GDAXI"],
+              "crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD", "AVAX-USD", "DOGE-USD"],
+          }
+          out = Path("data/market_cache")
+          for symbol in sum(universe.values(), []):
+              safe = symbol.replace("=", "eq").replace("^", "idx").replace("-", "dash")
+              for interval, period in (("1h", "730d"), ("1d", "10y")):
+                  df = yf.download(symbol, interval=interval, period=period, auto_adjust=False, progress=False, group_by="column")
+                  if df.empty:
+                      print("NO DATA", symbol, interval); continue
+                  if getattr(df.columns, "nlevels", 1) > 1:
+                      df.columns = [c[0] for c in df.columns]
+                  keep = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+                  df[keep].dropna().to_csv(out / f"yf_{safe}_{interval}.csv")
+                  print(symbol, interval, len(df))
+          PY
+      - name: Run historical tournament
+        run: python backtests/run_research.py --glob 'data/market_cache/yf_*.csv' --output backtests/research_report.json
+      - name: Upload research report
+        uses: actions/upload-artifact@v4
+        with:
+          name: bunga-research-report
+          path: backtests/research_report.json
