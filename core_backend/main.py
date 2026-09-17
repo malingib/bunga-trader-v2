@@ -473,7 +473,7 @@ def _get_strategy_engine():
 
 
 @app.get("/strategy/status")
-def strategy_status():
+def strategy_status(_auth: None = Depends(require_api_key)):
     """Returns current strategy engine configuration and state."""
     engine = _get_strategy_engine()
     cfg = engine.cfg
@@ -507,7 +507,7 @@ async def strategy_poll(_auth: None = Depends(require_api_key)):
 
 
 @app.get("/strategy/last-signals")
-def strategy_last_signals(limit: int = 20):
+def strategy_last_signals(limit: int = 20, _auth: None = Depends(require_api_key)):
     """Return raw strategy engine signals logged to ML data store."""
     from pathlib import Path
     data_dir = Path(_get_strategy_engine().cfg.ml_data_dir)
@@ -580,7 +580,7 @@ def strategy_config(
 
 
 @app.get("/strategy/history")
-def strategy_history(db: Session = Depends(get_db_dependency)):
+def strategy_history(_auth: None = Depends(require_api_key), db: Session = Depends(get_db_dependency)):
     """Return aggregated trade history with equity curve + per-symbol breakdown."""
     from collections import defaultdict
 
