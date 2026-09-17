@@ -1,4 +1,6 @@
-"""Bunga Trader - Risk Engine"""
+"""Bunga Trader - Risk Engine."""
+
+import math
 from typing import Optional, Tuple
 from datetime import datetime, date
 from .database import get_db
@@ -137,15 +139,21 @@ def calculate_lot_size(
     max_lot: float = CONFIG.max_lot,
     current_price: Optional[float] = None,
 ) -> Tuple[float, Optional[str]]:
-    if account_balance <= 0:
+    if not math.isfinite(account_balance) or account_balance <= 0:
         return 0.0, "Invalid account balance"
     if not sl_price or sl_price <= 0:
         return 0.0, "Invalid stop loss price"
-    if risk_percent <= 0 or risk_percent > 10:
+    if not math.isfinite(risk_percent) or risk_percent <= 0 or risk_percent > 10:
         return 0.0, f"Risk percent {risk_percent}% out of range (0.1-10%)"
     allowed, reason = check_daily_limits(account_balance)
     if not allowed:
         return 0.0, reason
+    if entry_price is not None and (not math.isfinite(entry_price) or entry_price <= 0):
+        return 0.0, "Invalid entry price"
+    if not math.isfinite(sl_price):
+        return 0.0, "Invalid stop loss price"
+    if current_price is not None and (not math.isfinite(current_price) or current_price <= 0):
+        return 0.0, "Invalid current price"
     effective_entry = entry_price if entry_price else current_price
     if not effective_entry or effective_entry <= 0:
         logger.warning(f"No entry price for {symbol}, using minimum lot")
@@ -165,20 +173,45 @@ def calculate_lot_size(
     return lot, None
 
 def validate_signal_risk(signal: ParsedSignal, account_balance: float) -> Tuple[bool, Optional[str]]:
-    if not signal.sl:
+    """Validate signal geometry and R:R before a signal can be dispatched."""
+    if not math.isfinite(account_balance) or account_balance <= 0:
+        return False, "Invalid account balance"
+    action = (signal.action or "").upper()
+    if action not in {"BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP"}:
+        return False, f"Unsupported action {signal.action}"
+    values = (signal.entry_price, signal.sl, signal.tp, signal.tp2, signal.tp3)
+    if any(v is not None and not math.isfinite(v) for v in values):
+        return False, "Signal contains a non-finite price"
+    if signal.sl is None or signal.sl <= 0:
         return False, "No stop loss defined"
-    if signal.action in ("BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP") and not signal.entry_price:
+    if action in ("BUY_LIMIT", "SELL_LIMIT", "BUY_STOP", "SELL_STOP") and signal.entry_price is None:
         return False, "Pending orders require an entry price"
-    if not signal.entry_price and not signal.tp:
+    if signal.entry_price is None and signal.tp is None:
         return False, "No entry price or take profit defined"
-    if signal.entry_price and signal.sl and signal.tp:
-        risk = abs(signal.entry_price - signal.sl)
-        reward = abs(signal.tp - signal.entry_price)
-        if risk <= 0:
-            return False, "Invalid risk distance (SL = Entry)"
-        rr_ratio = reward / risk
-        if rr_ratio < CONFIG.min_rr_ratio:
-            return False, (
-                f"R:R ratio {rr_ratio:.2f} below minimum {CONFIG.min_rr_ratio:.2f}"
-            )
+
+    if signal.entry_price is not None:
+        entry = signal.entry_price
+        sl = signal.sl
+        if action.startswith("BUY") and sl >= entry:
+            return False, "BUY stop loss must be below entry"
+        if action.startswith("SELL") and sl <= entry:
+            return False, "SELL stop loss must be above entry"
+
+        targets = [v for v in (signal.tp, signal.tp2, signal.tp3) if v is not None]
+        if targets:
+            if action.startswith("BUY") and any(tp <= entry for tp in targets):
+                return False, "BUY take profits must be above entry"
+            if action.startswith("SELL") and any(tp >= entry for tp in targets):
+                return False, "SELL take profits must be below entry"
+
+        if signal.tp is not None:
+            risk = abs(entry - sl)
+            reward = abs(signal.tp - entry)
+            if risk <= 0:
+                return False, "Invalid risk distance (SL = Entry)"
+            rr_ratio = reward / risk
+            if rr_ratio < CONFIG.min_rr_ratio:
+                return False, (
+                    f"R:R ratio {rr_ratio:.2f} below minimum {CONFIG.min_rr_ratio:.2f}"
+                )
     return True, None
