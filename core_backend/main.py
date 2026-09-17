@@ -144,7 +144,7 @@ def health_check():
 
 
 @app.get("/status")
-def system_status(db: Session = Depends(get_db_dependency)):
+def system_status(_auth: None = Depends(require_api_key), db: Session = Depends(get_db_dependency)):
     all_signals = db.query(ParsedSignal).all()
     pending_count = len([s for s in all_signals if s.status == SignalStatus.PENDING.value])
     approved_count = len([s for s in all_signals if s.status == SignalStatus.APPROVED.value])
@@ -281,6 +281,7 @@ def reject_signal(
 @app.post("/signals/approve-all")
 async def approve_all(
     account_balance: Optional[float] = None,
+    _auth: None = Depends(require_api_key),
     db: Session = Depends(get_db_dependency),
 ):
     global _approve_all_last_at
