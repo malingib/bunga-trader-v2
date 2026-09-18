@@ -11,7 +11,7 @@ from datetime import datetime, timezone, date
 from typing import Optional
 from pathlib import Path
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,6 +28,16 @@ from .symbols import is_supported_symbol
 from .sources.strategy_source import StrategyPoller
 
 logger = setup_logger("MainAPI")
+
+
+def require_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
+    """Fail-closed authentication for state-changing/private API routes."""
+    expected = CONFIG.api_key
+    if not expected:
+        raise HTTPException(status_code=503, detail="API authentication is not configured")
+    if x_api_key != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
 
 _approve_all_last_at: float = 0.0
 _APPROVE_ALL_COOLDOWN_SEC = 60.0
@@ -134,7 +144,7 @@ def health_check():
 
 
 @app.get("/status")
-def system_status(db: Session = Depends(get_db_dependency)):
+def system_status(_auth: None = Depends(require_api_key), db: Session = Depends(get_db_dependency)):
     all_signals = db.query(ParsedSignal).all()
     pending_count = len([s for s in all_signals if s.status == SignalStatus.PENDING.value])
     approved_count = len([s for s in all_signals if s.status == SignalStatus.APPROVED.value])
@@ -196,7 +206,7 @@ def market_live():
 
 
 @app.get("/signals/pending")
-def list_pending(db: Session = Depends(get_db_dependency)):
+def list_pending(_auth: None = Depends(require_api_key), db: Session = Depends(get_db_dependency)):
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     pending = (
         db.query(ParsedSignal)
@@ -228,7 +238,7 @@ def list_pending(db: Session = Depends(get_db_dependency)):
 
 
 @app.get("/signals/{signal_id}")
-def get_signal(signal_id: int, db: Session = Depends(get_db_dependency)):
+def get_signal(signal_id: int, _auth: None = Depends(require_api_key), db: Session = Depends(get_db_dependency)):
     signal = db.query(ParsedSignal).filter(ParsedSignal.id == signal_id).first()
     if not signal:
         raise HTTPException(status_code=404, detail="Signal not found")
@@ -252,6 +262,7 @@ def get_signal(signal_id: int, db: Session = Depends(get_db_dependency)):
 async def approve_signal(
     signal_id: int,
     account_balance: Optional[float] = None,
+    _auth: None = Depends(require_api_key),
     db: Session = Depends(get_db_dependency),
 ):
     return await approve_signal_by_id(signal_id, account_balance, db)
@@ -261,6 +272,7 @@ async def approve_signal(
 def reject_signal(
     signal_id: int,
     reason: Optional[str] = None,
+    _auth: None = Depends(require_api_key),
     db: Session = Depends(get_db_dependency),
 ):
     return reject_signal_by_id(signal_id, reason, db)
@@ -269,6 +281,7 @@ def reject_signal(
 @app.post("/signals/approve-all")
 async def approve_all(
     account_balance: Optional[float] = None,
+    _auth: None = Depends(require_api_key),
     db: Session = Depends(get_db_dependency),
 ):
     global _approve_all_last_at
@@ -293,7 +306,7 @@ async def approve_all(
 
 
 @app.get("/trades")
-def list_trades(limit: int = 20, offset: int = 0, status: Optional[str] = None, db: Session = Depends(get_db_dependency)):
+def list_trades(limit: int = 20, offset: int = 0, status: Optional[str] = None, _auth: None = Depends(require_api_key), db: Session = Depends(get_db_dependency)):
     query = db.query(TradeLog).order_by(TradeLog.executed_at.desc())
     if status:
         query = query.filter(TradeLog.result == status)
@@ -321,7 +334,7 @@ def list_trades(limit: int = 20, offset: int = 0, status: Optional[str] = None, 
 
 
 @app.post("/trades/{trade_id}/feedback")
-def trade_feedback(trade_id: int, pnl: float, status: str, db: Session = Depends(get_db_dependency)):
+def trade_feedback(trade_id: int, pnl: float, status: str, _auth: None = Depends(require_api_key), db: Session = Depends(get_db_dependency)):
     trade = db.query(TradeLog).filter(TradeLog.id == trade_id).first()
     if not trade:
         raise HTTPException(status_code=404, detail="Not found")
@@ -346,7 +359,7 @@ def trade_feedback(trade_id: int, pnl: float, status: str, db: Session = Depends
 
 
 @app.get("/broker/status")
-async def broker_status():
+async def broker_status(_auth: None = Depends(require_api_key)):
     """List available brokers and show active broker connection state."""
     from .brokers import list_available, get_active
 
@@ -368,7 +381,7 @@ async def broker_status():
 
 
 @app.post("/broker/switch")
-async def broker_switch(name: str = ""):
+async def broker_switch(name: str = "", _auth: None = Depends(require_api_key)):
     """Switch to a different broker. Pass empty string to disconnect."""
     from .brokers import switch_broker
 
@@ -385,7 +398,7 @@ async def broker_switch(name: str = ""):
 
 
 @app.post("/broker/connect")
-async def broker_reconnect():
+async def broker_reconnect(_auth: None = Depends(require_api_key)):
     """Reconnect the current (or default) broker."""
     from .brokers import get_active, switch_broker, list_available
 
@@ -460,7 +473,7 @@ def _get_strategy_engine():
 
 
 @app.get("/strategy/status")
-def strategy_status():
+def strategy_status(_auth: None = Depends(require_api_key)):
     """Returns current strategy engine configuration and state."""
     engine = _get_strategy_engine()
     cfg = engine.cfg
@@ -483,7 +496,7 @@ def strategy_status():
 
 
 @app.post("/strategy/poll")
-async def strategy_poll():
+async def strategy_poll(_auth: None = Depends(require_api_key)):
     """Force a one-shot strategy evaluation cycle."""
     engine = _get_strategy_engine()
     signals = await asyncio.to_thread(engine.run_poll)
@@ -494,7 +507,7 @@ async def strategy_poll():
 
 
 @app.get("/strategy/last-signals")
-def strategy_last_signals(limit: int = 20):
+def strategy_last_signals(limit: int = 20, _auth: None = Depends(require_api_key)):
     """Return raw strategy engine signals logged to ML data store."""
     from pathlib import Path
     data_dir = Path(_get_strategy_engine().cfg.ml_data_dir)
@@ -518,7 +531,7 @@ def strategy_last_signals(limit: int = 20):
 
 
 @app.post("/strategy/toggle")
-def strategy_toggle(paused: bool = True):
+def strategy_toggle(paused: bool = True, _auth: None = Depends(require_api_key)):
     """Pause or resume the strategy polling loop."""
     global _strategy_poller
     poller = _strategy_poller
@@ -537,6 +550,7 @@ def strategy_config(
     momentum_enabled: Optional[bool] = None,
     trend_gate_enabled: Optional[bool] = None,
     trigger_mode: Optional[str] = None,
+    _auth: None = Depends(require_api_key),
 ):
     """Update strategy configuration at runtime."""
     from .strategies.config import QUADAPT_CFG
@@ -566,7 +580,7 @@ def strategy_config(
 
 
 @app.get("/strategy/history")
-def strategy_history(db: Session = Depends(get_db_dependency)):
+def strategy_history(_auth: None = Depends(require_api_key), db: Session = Depends(get_db_dependency)):
     """Return aggregated trade history with equity curve + per-symbol breakdown."""
     from collections import defaultdict
 

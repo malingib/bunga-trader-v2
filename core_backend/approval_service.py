@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+from sqlalchemy import update
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -160,6 +161,26 @@ async def approve_signal_by_id(
     if lot <= 0:
         return _reject_signal(signal, db, "Lot", "Zero lot")
 
+    # Atomically claim the signal before broker dispatch. This prevents two
+    # concurrent approval requests from both sending the same order.
+    claim = (
+        update(ParsedSignal)
+        .where(
+            ParsedSignal.id == signal.id,
+            ParsedSignal.status == SignalStatus.PENDING.value,
+        )
+        .values(
+            status=SignalStatus.APPROVED.value,
+            lot_size=lot,
+            risk_percent=CONFIG.default_risk_percent,
+        )
+    )
+    claimed = db.execute(claim).rowcount
+    if claimed != 1:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Signal was already claimed for approval")
+
+    # Keep the in-memory object consistent with the committed claim.
     signal.lot_size = lot
     signal.risk_percent = CONFIG.default_risk_percent
     signal.status = SignalStatus.APPROVED.value
